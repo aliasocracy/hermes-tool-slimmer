@@ -64,7 +64,7 @@ Then run the installer:
 scripts/install-hermes-tool-slimmer.sh
 ```
 
-That handles the package install, dashboard plugin copy, Hermes plugin enablement, selector-hook patch, service restart, and final health report. The core patcher supports both the older monolithic `run_agent.py` Hermes layout and the newer v0.14.0 modular `agent/conversation_loop.py` plus `agent/chat_completion_helpers.py` layout.
+That handles the package install, dashboard plugin copy, Hermes plugin enablement, selector surface check, service restart, and final health report. On Hermes v0.19+ Tool Slimmer uses Hermes' built-in `llm_request` middleware and does not patch Hermes core. Older Hermes releases fall back to the core patcher, which supports the monolithic `run_agent.py` layout and the v0.14.0 modular `agent/conversation_loop.py` plus `agent/chat_completion_helpers.py` layout.
 
 Verify it worked:
 
@@ -256,9 +256,12 @@ Supported/target core surfaces:
 
 - `ctx.register_tool_schema_selector(callback)`
 - `ctx.register_schema_selector(callback)`
-- `ctx.register_hook("select_tool_schemas", callback)`
+- `ctx.register_hook("select_tool_schemas", callback)`, when Hermes core advertises the hook and its turn loop calls it
+- `ctx.register_middleware("llm_request", callback)` on Hermes v0.19+, which rewrites the provider request's `tools` without any core patch
 
-If none exists, active schema slimming requires the installer/core patch to add `select_tool_schemas` before provider request construction. Without that core hook, the plugin remains useful for dashboard visibility, dry-run diagnostics, benchmarking, and configuration recommendations, but it cannot reduce provider request schemas. See `docs/hermes-core-selector-hook.patch` for a minimal upstreamable Hermes core patch artifact based on current v0.14.0 source inspection.
+Only one surface is registered, so a request is never slimmed twice. `hermes tool-slimmer doctor` reports the active surface under `core_selector_hook.detail.surface`.
+
+If none exists (Hermes older than v0.19 without the core patch), active schema slimming requires the installer/core patch to add `select_tool_schemas` before provider request construction. Without that core hook, the plugin remains useful for dashboard visibility, dry-run diagnostics, benchmarking, and configuration recommendations, but it cannot reduce provider request schemas. See `docs/hermes-core-selector-hook.patch` for a minimal upstreamable Hermes core patch artifact based on current v0.14.0 source inspection.
 
 ## Safety model
 

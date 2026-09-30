@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,8 +41,8 @@ class IndexStore:
         if not self.path.exists():
             return None
         try:
-            return json.loads(self.path.read_text())
-        except json.JSONDecodeError:
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return None
 
     def save_live_schemas(self, schemas: list[Schema], context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -69,8 +70,8 @@ class IndexStore:
         if not path.exists():
             return None
         try:
-            payload = json.loads(path.read_text())
-        except json.JSONDecodeError:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return None
         if not isinstance(payload, dict):
             return None
@@ -92,12 +93,13 @@ class IndexStore:
         seen: set[tuple[str, str]] = set()
         for label, path in paths:
             try:
-                payload = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
                 continue
             if not isinstance(payload, dict):
                 continue
-            context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+            raw_context = payload.get("context")
+            context: dict[str, Any] = raw_context if isinstance(raw_context, dict) else {}
             platform = str(context.get("platform") or label)
             key = (label, platform)
             if key in seen:
@@ -130,8 +132,8 @@ class IndexStore:
             except OSError:
                 return []
         try:
-            payload = json.loads(self.live_schemas_path.read_text())
-        except json.JSONDecodeError:
+            payload = json.loads(self.live_schemas_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return []
         if not isinstance(payload, dict):
             return []
@@ -155,7 +157,7 @@ class IndexStore:
             "total_tools": len(docs),
             "documents": [{"name": doc.name, "toolset": doc.toolset, "tokens": doc.tokens, "text": doc.text} for doc in docs],
         }
-        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        _write_json(self.path, payload)
         return payload
 
     def ensure(self, schemas: list[Schema]) -> dict[str, Any]:
@@ -181,9 +183,18 @@ def _safe_snapshot_name(value: Any) -> str:
     return safe.strip("._-")
 
 
+def _write_json(path: Path, payload: dict[str, Any], *, private: bool = False) -> None:
+    # Gateway and dashboard processes share these files; replace atomically so
+    # a reader never sees a half-written snapshot.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    if private:
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    _write_json(path, payload, private=True)

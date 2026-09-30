@@ -15,6 +15,7 @@ from .anthropic_tool_search import supports_anthropic_tool_search
 from .config import ToolSlimmerConfig, config_path, load_config
 from .corpus import tool_name
 from .index_store import IndexStore
+from .integration import SURFACE_HOOK, SURFACE_MIDDLEWARE, resolve_selector_surface
 from .metrics import read_decisions, reduction_metrics, summarize_decisions
 from .native import native_tool_search_status
 from .selector import ToolSelector
@@ -27,7 +28,7 @@ def _load_schemas(path: str | None) -> list[dict[str, Any]]:
     if not target.is_file():
         return []
     try:
-        data = yaml.safe_load(target.read_text())
+        data = yaml.safe_load(target.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
         return []
     if isinstance(data, dict):
@@ -84,7 +85,7 @@ def _load_prompts(path: str | None) -> list[dict[str, Any]]:
     if not target.is_file():
         return []
     try:
-        data = yaml.safe_load(target.read_text())
+        data = yaml.safe_load(target.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
         return []
     if isinstance(data, dict):
@@ -248,12 +249,9 @@ def _sanitize_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         "platform": snapshot.get("platform"),
         "total_tools": snapshot.get("total_tools"),
         "schema_count": snapshot.get("schema_count"),
-        "has_session_id": bool(snapshot.get("session_id")),
-        "model": snapshot.get("model"),
-        "provider": snapshot.get("provider"),
+        "has_session_id": bool(snapshot.get("has_session_id")),
         "checksum": str(snapshot.get("checksum") or "")[:12],
         "updated_at": snapshot.get("updated_at"),
-        "path": snapshot.get("path"),
     }
 
 
@@ -365,7 +363,7 @@ def run_doctor(
     enabled_status = "warn"
     if target.is_file():
         try:
-            data = yaml.safe_load(target.read_text()) or {}
+            data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
             enabled = data.get("plugins", {}).get("enabled", []) if isinstance(data, dict) else []
             enabled_status = "pass" if "tool-slimmer" in enabled else "warn"
             enabled_detail = enabled
@@ -383,7 +381,7 @@ def run_doctor(
     store = IndexStore()
     try:
         probe = store.root / ".doctor-write-test" if store.root else store.path.parent / ".doctor-write-test"
-        probe.write_text("ok")
+        probe.write_text("ok", encoding="utf-8")
         probe.unlink()
         index = store.load()
         checks["index_store"] = _check("pass", "index directory is readable/writable", {"path": str(store.path), "indexed_tools": (index or {}).get("total_tools", 0)})
@@ -417,21 +415,22 @@ def run_doctor(
         native_status,
     )
 
-    selector_supported = False
-    try:
-        import hermes_cli.plugins as plugins  # type: ignore[import-not-found]
-
-        selector_supported = "select_tool_schemas" in getattr(plugins, "VALID_HOOKS", set())
-        checks["core_selector_hook"] = _check(
-            "pass" if selector_supported else "warn",
-            "Hermes core advertises select_tool_schemas"
-            if selector_supported
-            else "Hermes core does not advertise select_tool_schemas; rerun scripts/install-hermes-tool-slimmer.sh to apply the local compatibility patch",
-        )
-    except Exception:
+    if importlib.util.find_spec("hermes_cli") is None:
         checks["core_selector_hook"] = _check(
             "warn",
             "Hermes core not importable here; rerun the installer with the Hermes venv launcher",
+        )
+    else:
+        surface = resolve_selector_surface()
+        messages = {
+            SURFACE_HOOK: "Hermes core calls select_tool_schemas; Tool Slimmer uses the core hook",
+            SURFACE_MIDDLEWARE: "Hermes llm_request middleware is available; Tool Slimmer slims requests without a core patch",
+            None: "Hermes exposes no selector surface; upgrade Hermes to v0.19+ or rerun scripts/install-hermes-tool-slimmer.sh",
+        }
+        checks["core_selector_hook"] = _check(
+            "pass" if surface else "warn",
+            messages[surface],
+            {"surface": surface},
         )
 
     if cfg.mode == "anthropic_tool_search":
@@ -453,7 +452,7 @@ def run_doctor(
     else:
         checks["anthropic_tool_search"] = _check("pass", "Anthropic Tool Search mode is not active")
     checks["two_pass"] = _check(
-        "pass" if cfg.mode == "two_pass" else "pass",
+        "pass",
         "Experimental two_pass mode is active" if cfg.mode == "two_pass" else "Experimental two_pass mode is not active",
         cfg.two_pass.__dict__,
     )
@@ -537,7 +536,7 @@ def handle_cli(args: argparse.Namespace) -> int:
                     "total_tools_indexed": index.get("total_tools", 0),
                     "source_context": latest_live,
                     "live_snapshots": live_snapshots,
-                    "core_integration": "active when Hermes exposes select_tool_schemas hook or the installer applies the local compatibility patch",
+                    "core_integration": resolve_selector_surface(),
                 },
                 indent=2,
             )

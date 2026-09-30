@@ -30,19 +30,19 @@ def _patch_dashboard_modules(module, monkeypatch):
     monkeypatch.setattr(
         module,
         "_load_modules",
-        lambda: (
-            analyze_config,
-            apply_recommended_config,
-            apply_tool_preference,
-            rollback_config,
-            eval_markdown,
-            eval_prompts,
-            privacy_inventory,
-            run_doctor,
-            load_config,
-            IndexStore,
-            read_decisions,
-            summarize_decisions,
+        lambda: types.SimpleNamespace(
+            analyze_config=analyze_config,
+            apply_recommended_config=apply_recommended_config,
+            apply_tool_preference=apply_tool_preference,
+            rollback_config=rollback_config,
+            eval_markdown=eval_markdown,
+            eval_prompts=eval_prompts,
+            privacy_inventory=privacy_inventory,
+            run_doctor=run_doctor,
+            load_config=load_config,
+            IndexStore=IndexStore,
+            read_decisions=read_decisions,
+            summarize_decisions=summarize_decisions,
         ),
     )
 
@@ -1181,15 +1181,19 @@ def test_dashboard_advisor_apply_and_rollback(monkeypatch, tmp_path):
             json={"recommended_config": {"enabled": True, "mode": "keyword", "top_k": 6, "always_include": ["memory"]}},
         )
         backup_path = applied.json()["backup_path"]
+        applied_config = yaml.safe_load(config_path.read_text())
         preference = client.post(
             "/advisor/tool-preference",
             json={"tool": "cronjob", "action": "always_exclude", "profile": "telegram"},
         )
         rolled_back = client.post("/advisor/rollback", json={"backup_path": backup_path})
+        outside = client.post("/advisor/rollback", json={"backup_path": str(config_path)})
 
     assert applied.status_code == 200
-    assert yaml.safe_load(config_path.read_text())["tool_slimmer"]["top_k"] == 6
-    assert "tool-slimmer" in yaml.safe_load(config_path.read_text())["plugins"]["enabled"]
+    assert applied_config["tool_slimmer"]["top_k"] == 6
+    assert "tool-slimmer" in applied_config["plugins"]["enabled"]
+    assert outside.status_code == 400
+    assert outside.json()["detail"]["error"] == "backup_outside_backup_dir"
     assert preference.status_code == 200
     assert preference.json()["profile"] == "telegram"
     assert rolled_back.status_code == 200

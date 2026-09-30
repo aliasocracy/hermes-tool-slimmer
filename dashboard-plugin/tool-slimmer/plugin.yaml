@@ -1,5 +1,5 @@
 name: tool-slimmer
-version: 0.6.5
+version: 0.7.0
 description: Reduce Hermes tool-schema overhead and show selector savings in the dashboard.
 provides_tools:
   - tool_slimmer_select

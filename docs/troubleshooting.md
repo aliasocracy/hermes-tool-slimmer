@@ -73,7 +73,9 @@ $HOME/.hermes/hermes-agent/venv/bin/hermes tool-slimmer doctor
 
 ## Hermes update removed active slimming
 
-Hermes updates can replace the files that Tool Slimmer patches for active schema selection. If `hermes tool-slimmer doctor` warns that `select_tool_schemas` is unavailable after updating Hermes, run:
+On Hermes v0.19 and newer, Tool Slimmer slims requests through Hermes' built-in `llm_request` middleware, so Hermes updates no longer remove active slimming. Upgrade Tool Slimmer to v0.7.0+ if an older release reports `Hermes selector hook is unavailable; tool-slimmer will run diagnostics only`.
+
+On older Hermes releases, updates can replace the files that Tool Slimmer patches for active schema selection. If `hermes tool-slimmer doctor` warns that no selector surface is available after updating Hermes, run:
 
 ```bash
 bash "$HOME/hermes-tool-slimmer/scripts/install-hermes-tool-slimmer.sh"

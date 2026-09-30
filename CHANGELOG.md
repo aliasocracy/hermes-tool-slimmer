@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.0 - 2026-09-30
+
+Hermes v0.19+ selector compatibility and cleanup release.
+
+### Added
+
+- Active slimming through Hermes' built-in `llm_request` middleware (Hermes v0.19+), so current Hermes releases no longer need the local `select_tool_schemas` core patch and Hermes updates or container rebuilds no longer silently turn Tool Slimmer into diagnostics-only mode (#5). The adapter handles OpenAI chat, Anthropic messages, and Codex responses payloads, keeps provider server tools and forced `tool_choice` targets, and keeps the tool prompt-cache breakpoint on the last kept tool.
+- `doctor` and `status` now report the active selector surface (`select_tool_schemas_hook` or `llm_request_middleware`).
+
+### Fixed
+
+- A core whose `VALID_HOOKS` advertises `select_tool_schemas` but whose turn loop never calls it (a partially applied core patch) is now detected, and the middleware is used instead of registering a hook that never fires.
+- The installer no longer aborts on Hermes layouts it cannot patch, skips core patching when the middleware is available, handles multi-entry `VALID_HOOKS` lines, and writes `hermes_cli/plugins.py` only after the turn-loop patch succeeds.
+- Advisor apply and tool-preference changes refuse to rewrite an unparseable Hermes `config.yaml` instead of replacing it with only the Tool Slimmer section.
+- Dashboard rollback only restores files from the Tool Slimmer backup directory, and same-second advisor edits no longer overwrite each other's backups.
+- Dashboard index rebuild now prefers the larger of the dashboard process catalog and the last live gateway snapshot, as documented.
+- Two-pass hydration keeps Anthropic-shaped `input_schema` tools intact.
+- Hermes home resolves like Hermes itself (including `%LOCALAPPDATA%\hermes` on Windows), and config/index files are read and written as UTF-8. Index snapshots are written atomically and only rewritten when the catalog or request context changes.
+- The root `dashboard/` bundle had drifted from the installed `dashboard-plugin/` copy; both are identical again and a test now enforces it.
+- Diagnostics live snapshots now report `has_session_id` correctly.
+- The two-pass hydration cache is bounded to recent sessions.
+
 ## 0.6.5 - 2026-06-05
 
 Post-Hermes-update compatibility and packaging guardrail release.

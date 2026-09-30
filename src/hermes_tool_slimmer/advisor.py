@@ -292,6 +292,25 @@ def run_advisor(limit: int = 1000, live_schemas: list[Schema] | None = None) -> 
     return current_advisor(limit=limit, live_schemas=live_schemas)
 
 
+def _read_hermes_config(target: Path) -> tuple[dict[str, Any], dict[str, object] | None]:
+    """Load the whole Hermes config for a rewrite, refusing anything unparseable.
+
+    Rewriting an unreadable config from an empty mapping would silently drop
+    every non-Tool-Slimmer Hermes setting.
+    """
+    if not target.is_file():
+        return {}, None
+    try:
+        data = yaml.safe_load(target.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        return {}, {"ok": False, "error": "config_unreadable", "path": str(target), "message": str(exc)}
+    if data is None:
+        return {}, None
+    if not isinstance(data, dict):
+        return {}, {"ok": False, "error": "config_not_mapping", "path": str(target)}
+    return data, None
+
+
 def backup_dir() -> Path:
     path = hermes_home() / "tool-slimmer" / "backups"
     path.mkdir(parents=True, exist_ok=True)
@@ -301,11 +320,16 @@ def backup_dir() -> Path:
 def backup_config(path: str | Path | None = None) -> Path:
     target = Path(path).expanduser() if path else config_path()
     stamp = time.strftime("%Y%m%d-%H%M%S")
+    # Several edits can land in the same second; never overwrite an earlier backup.
     backup = backup_dir() / f"config-{stamp}.yaml"
+    suffix = 1
+    while backup.exists():
+        backup = backup_dir() / f"config-{stamp}-{suffix}.yaml"
+        suffix += 1
     if target.is_file():
         shutil.copy2(target, backup)
     else:
-        backup.write_text("# No config file existed before Tool Slimmer advisor apply.\n")
+        backup.write_text("# No config file existed before Tool Slimmer advisor apply.\n", encoding="utf-8")
     return backup
 
 
@@ -315,12 +339,9 @@ def apply_recommended_config(
     path: str | Path | None = None,
 ) -> dict[str, object]:
     target = Path(path).expanduser() if path else config_path()
-    try:
-        data = yaml.safe_load(target.read_text()) if target.is_file() else {}
-    except yaml.YAMLError:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data, error = _read_hermes_config(target)
+    if error:
+        return error
     cfg = load_config(target) if target.is_file() else ToolSlimmerConfig()
     store = IndexStore()
     index = store.load() or {}
@@ -340,7 +361,7 @@ def apply_recommended_config(
     data["tool_slimmer"] = payload
 
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(dump_yaml(data))
+    target.write_text(dump_yaml(data), encoding="utf-8")
     return {"ok": True, "path": str(target), "backup_path": str(backup), "applied": payload}
 
 
@@ -354,12 +375,9 @@ def apply_tool_preference(
     if action not in {"always_include", "always_exclude"}:
         return {"ok": False, "error": "invalid_action", "action": action}
     target = Path(path).expanduser() if path else config_path()
-    try:
-        data = yaml.safe_load(target.read_text()) if target.is_file() else {}
-    except yaml.YAMLError:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
+    data, error = _read_hermes_config(target)
+    if error:
+        return error
     section = data.get("tool_slimmer")
     if not isinstance(section, dict):
         section = {}
@@ -381,12 +399,18 @@ def apply_tool_preference(
     section["profiles"] = profiles
     data["tool_slimmer"] = section
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(dump_yaml(data))
+    target.write_text(dump_yaml(data), encoding="utf-8")
     return {"ok": True, "path": str(target), "backup_path": str(backup), "profile": profile, "action": action, "tool": tool}
 
 
 def rollback_config(backup_path: str | Path, *, path: str | Path | None = None) -> dict[str, object]:
     backup = Path(backup_path).expanduser()
+    # Only restore files this advisor created; the dashboard forwards this path
+    # from an HTTP body, so an arbitrary path must not overwrite the config.
+    try:
+        backup.resolve().relative_to(backup_dir().resolve())
+    except ValueError:
+        return {"ok": False, "error": "backup_outside_backup_dir", "backup_path": str(backup)}
     if not backup.is_file():
         return {"ok": False, "error": "backup_not_found", "backup_path": str(backup)}
     target = Path(path).expanduser() if path else config_path()

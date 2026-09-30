@@ -1,5 +1,9 @@
 # Hermes core integration
 
+Hermes v0.19+ ships `llm_request` middleware that can rewrite the provider request before each model call. Tool Slimmer v0.7.0+ registers there when the `select_tool_schemas` hook is not available, so current Hermes releases need no core patch. The adapter (`src/hermes_tool_slimmer/middleware.py`) normalizes OpenAI chat, Anthropic messages, and Codex responses payloads, only removes function tools, keeps provider server tools, keeps a forced `tool_choice` target, and moves the tool prompt-cache breakpoint onto the last kept tool. Bedrock Converse requests (`toolConfig`) pass through unchanged.
+
+The rest of this page describes the core hook path, which is still preferred when a patched core both advertises and calls `select_tool_schemas`.
+
 Hermes Tool Slimmer needs one upstream integration point before provider request construction. Current Hermes v0.14.0 source inspection found the main schema provider in `model_tools.get_tool_definitions(...)`, plugin hook registration in `hermes_cli.plugins.PluginContext.register_hook(...)`, turn orchestration in `agent/conversation_loop.py`, and provider kwargs construction in `agent/chat_completion_helpers.py`.
 
 Compatibility note: Tool Slimmer v0.4.0+ is the supported line for Hermes Agent v0.14.0 active schema slimming. The installer patcher still carries a fallback for older monolithic `run_agent.py` Hermes cores, but older Tool Slimmer releases should not be used with Hermes v0.14.0.

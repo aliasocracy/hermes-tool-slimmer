@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .config import ToolSlimmerConfig, load_config
+from .config import load_config
 from .index_store import IndexStore
 from .selector import ToolSelector
 from .two_pass import hydration_response
@@ -130,9 +130,7 @@ def tool_slimmer_select(args: dict, **kwargs: Any) -> str:
         if mode == "eager":
             return _json({"ok": False, "error": "mode_not_allowed", "message": "eager mode is not available through the model-callable selector."})
         if mode is not None:
-            cfg = ToolSlimmerConfig.from_mapping(
-                {**cfg.__dict__, "mode": mode, "anthropic": cfg.anthropic.__dict__, "two_pass": cfg.two_pass.__dict__}
-            )
+            cfg = cfg.with_mode(str(mode))
         schemas, schema_source = _resolve_schemas(args, kwargs)
         if not schemas:
             return _json(

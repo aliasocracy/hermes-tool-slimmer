@@ -95,10 +95,14 @@ def hydrate_tool_schema(base_schema: Schema | None, tools: list[CompactTool]) ->
         "This does not execute tools. It only asks Hermes to expose the requested full schemas "
         "on the next model call. Batch all likely-needed tools together."
     )
-    params = target.get("parameters") if isinstance(target.get("parameters"), dict) else {}
+    # Anthropic-shaped schemas (llm_request middleware path) use input_schema.
+    params_key = "input_schema" if "input_schema" in target else "parameters"
+    raw_params = target.get(params_key)
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
     if not params:
         params = {"type": "object", "properties": {}}
-    properties = params.get("properties") if isinstance(params.get("properties"), dict) else {}
+    raw_properties = params.get("properties")
+    properties: dict[str, Any] = raw_properties if isinstance(raw_properties, dict) else {}
     tools_property: dict[str, Any] = {
         "type": "array",
         "items": {"type": "string", "enum": allowed_names},
@@ -111,7 +115,7 @@ def hydrate_tool_schema(base_schema: Schema | None, tools: list[CompactTool]) ->
     }
     params["properties"] = properties
     params["required"] = ["tools"]
-    target["parameters"] = params
+    target[params_key] = params
     if function is not None:
         schema["function"] = target
     return schema

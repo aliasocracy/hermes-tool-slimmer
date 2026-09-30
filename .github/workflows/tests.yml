@@ -33,6 +33,9 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: Type check
+        run: uv run mypy src
+
       - name: Compile
         run: uv run python -m compileall -q src tests dashboard-plugin/tool-slimmer
 

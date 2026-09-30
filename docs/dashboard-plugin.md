@@ -23,7 +23,7 @@ That script:
 - installs this package into the Hermes Python environment
 - copies the dashboard/user plugin into `$HERMES_HOME/plugins/tool-slimmer`
 - enables `tool-slimmer` with `hermes plugins enable tool-slimmer`
-- patches Hermes core with the `select_tool_schemas` hook when it is missing
+- uses Hermes' `llm_request` middleware on Hermes v0.19+, and only patches Hermes core with the `select_tool_schemas` hook on older releases
 - restarts `hermes-dashboard.service` and `hermes-gateway.service` when they exist
 - runs a final health report
 

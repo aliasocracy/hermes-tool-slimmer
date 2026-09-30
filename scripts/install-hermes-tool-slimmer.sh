@@ -156,7 +156,9 @@ try:
 except Exception:
     print("unknown")
     raise SystemExit(0)
-print(data.get("checks", {}).get("core_selector_hook", {}).get("status", "unknown"))
+check = data.get("checks", {}).get("core_selector_hook", {})
+detail = check.get("detail") if isinstance(check.get("detail"), dict) else {}
+print(f"{check.get('status', 'unknown')}:{detail.get('surface') or 'none'}")
 '
 }
 
@@ -181,10 +183,14 @@ if not plugins_py.exists():
 
 plugins_text = plugins_py.read_text(encoding="utf-8")
 if '"select_tool_schemas"' not in plugins_text:
-    marker = '    "pre_llm_call",\n'
-    if marker not in plugins_text:
+    # Newer Hermes packs several hook names per line; insert right after the
+    # first "pre_llm_call" entry inside VALID_HOOKS either way.
+    valid_hooks_at = plugins_text.find("VALID_HOOKS")
+    marker_at = plugins_text.find('"pre_llm_call",', valid_hooks_at) if valid_hooks_at >= 0 else -1
+    if marker_at < 0:
         raise SystemExit("Could not patch VALID_HOOKS in hermes_cli/plugins.py")
-    plugins_text = plugins_text.replace(marker, marker + '    "select_tool_schemas",\n', 1)
+    insert_at = marker_at + len('"pre_llm_call",')
+    plugins_text = plugins_text[:insert_at] + ' "select_tool_schemas",' + plugins_text[insert_at:]
 
     doc_marker = (
         '            {"context": "recalled text..."}\n'
@@ -200,9 +206,10 @@ if '"select_tool_schemas"' not in plugins_text:
     )
     if doc_marker in plugins_text:
         plugins_text = plugins_text.replace(doc_marker, doc_insert, 1)
-plugins_py.write_text(plugins_text, encoding="utf-8")
 
-patched_files = [plugins_py]
+# plugins.py is written last: advertising select_tool_schemas without the
+# turn-loop call site makes the plugin register a hook nothing ever invokes.
+patched_files = []
 patch_notes = []
 
 
@@ -417,28 +424,49 @@ elif run_agent_spec is not None and run_agent_spec.origin:
 else:
     raise SystemExit("Could not locate a supported Hermes core layout to patch")
 
+plugins_py.write_text(plugins_text, encoding="utf-8")
+patched_files.insert(0, plugins_py)
+
 print("Patched Hermes core: " + ", ".join(str(path) for path in patched_files))
 if patch_notes:
     print("Patch strategy: " + ", ".join(patch_notes))
 PY
 }
 
-step "Checking Hermes core selector hook"
-HOOK_STATUS="$(core_hook_status || true)"
-if [[ "$HOOK_STATUS" == "pass" ]]; then
-  echo "Core selector hook is available."
-  if [[ "$PATCH_CORE" == "1" ]]; then
-    echo "Verifying request-local schema selector integration."
-    patch_core
+run_patch_core() {
+  if patch_core; then
+    CORE_PATCHED=1
+  else
+    echo "WARNING: Hermes core patch did not apply; this Hermes layout is not recognized."
+    echo "Active slimming needs Hermes v0.19+ (llm_request middleware) or a patchable core."
   fi
-elif [[ "$PATCH_CORE" == "1" ]]; then
-  echo "Core selector hook is missing; patching Hermes core."
-  patch_core
-else
-  echo "Core selector hook is missing. Dashboard will work, but active schema slimming needs the hook."
-fi
+}
 
-if [[ "$PATCH_CORE" == "1" ]]; then
+step "Checking Hermes selector surface"
+CORE_PATCHED=0
+HOOK_STATUS="$(core_hook_status || true)"
+case "$HOOK_STATUS" in
+  pass:llm_request_middleware)
+    echo "Hermes llm_request middleware is available; no core patch needed."
+    ;;
+  pass:*)
+    echo "Core selector hook is available."
+    if [[ "$PATCH_CORE" == "1" ]]; then
+      echo "Verifying request-local schema selector integration."
+      run_patch_core
+    fi
+    ;;
+  *)
+    if [[ "$PATCH_CORE" == "1" ]]; then
+      echo "No selector surface found; patching Hermes core."
+      run_patch_core
+    else
+      echo "No selector surface found. Dashboard will work, but active schema slimming needs Hermes v0.19+ or the core patch."
+    fi
+    ;;
+esac
+
+if [[ "$CORE_PATCHED" == "1" ]]; then
   "$HERMES_PYTHON" - <<'PY'
 import importlib.util
 import py_compile

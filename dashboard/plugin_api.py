@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -25,7 +26,7 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
-def _load_modules():
+def _load_modules() -> SimpleNamespace:
     _ensure_local_src_path()
     try:
         from hermes_tool_slimmer.advisor import apply_recommended_config, apply_tool_preference, analyze_config, rollback_config
@@ -38,7 +39,20 @@ def _load_modules():
             status_code=503,
             detail={"error": "tool_slimmer_unavailable", "message": str(exc)},
         ) from exc
-    return analyze_config, apply_recommended_config, apply_tool_preference, rollback_config, eval_markdown, eval_prompts, privacy_inventory, run_doctor, load_config, IndexStore, read_decisions, summarize_decisions
+    return SimpleNamespace(
+        analyze_config=analyze_config,
+        apply_recommended_config=apply_recommended_config,
+        apply_tool_preference=apply_tool_preference,
+        rollback_config=rollback_config,
+        eval_markdown=eval_markdown,
+        eval_prompts=eval_prompts,
+        privacy_inventory=privacy_inventory,
+        run_doctor=run_doctor,
+        load_config=load_config,
+        IndexStore=IndexStore,
+        read_decisions=read_decisions,
+        summarize_decisions=summarize_decisions,
+    )
 
 
 def _summarize_index(store: Any) -> dict[str, Any]:
@@ -119,16 +133,19 @@ def _hermes_tool_definitions() -> list[dict[str, Any]]:
 
 
 def _live_hermes_schemas() -> tuple[list[dict[str, Any]], str]:
+    # The dashboard process usually sees fewer tools than the gateway (no MCP
+    # servers, no platform toolsets), so prefer whichever catalog is larger.
     hermes_error: HTTPException | None = None
+    hermes_schemas: list[dict[str, Any]] = []
     try:
-        schemas = _hermes_tool_definitions()
+        hermes_schemas = _hermes_tool_definitions()
     except HTTPException as exc:
         hermes_error = exc
-    else:
-        return schemas, "hermes"
     last_live = _last_live_request_schemas()
-    if last_live:
+    if last_live and len(last_live) > len(hermes_schemas):
         return last_live, "live_request"
+    if hermes_error is None:
+        return hermes_schemas, "hermes"
     if hermes_error is not None:
         raise hermes_error
     raise HTTPException(
@@ -139,16 +156,16 @@ def _live_hermes_schemas() -> tuple[list[dict[str, Any]], str]:
 
 @router.get("/status")
 async def status() -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, _apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, run_doctor, load_config, IndexStore, _read_decisions, _summarize_decisions = _load_modules()
+    mods = _load_modules()
     config_error = None
     try:
-        cfg = load_config()
+        cfg = mods.load_config()
     except Exception as exc:
         from hermes_tool_slimmer.config import ToolSlimmerConfig
 
         cfg = ToolSlimmerConfig(enabled=False)
         config_error = str(exc)
-    store = IndexStore()
+    store = mods.IndexStore()
     index = store.load() or {}
     return {
         "ok": config_error is None,
@@ -178,19 +195,19 @@ async def status() -> dict[str, Any]:
             "total_tools": _safe_int(index.get("total_tools")),
             "checksum": index.get("checksum"),
         },
-        "doctor": run_doctor(),
+        "doctor": mods.run_doctor(),
     }
 
 
 @router.get("/index")
 async def index_status() -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, _apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, _run_doctor, _load_config, IndexStore, _read_decisions, _summarize_decisions = _load_modules()
-    return {"ok": True, "index": _summarize_index(IndexStore())}
+    mods = _load_modules()
+    return {"ok": True, "index": _summarize_index(mods.IndexStore())}
 
 
 @router.post("/index/rebuild")
 async def rebuild_index(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, _apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, _run_doctor, _load_config, IndexStore, _read_decisions, _summarize_decisions = _load_modules()
+    mods = _load_modules()
     source = "hermes"
     schemas: list[dict[str, Any]]
     raw_schemas = (payload or {}).get("schemas") or (payload or {}).get("tools")
@@ -205,7 +222,7 @@ async def rebuild_index(payload: dict[str, Any] | None = Body(default=None)) -> 
             detail={"error": "invalid_schemas", "message": "Expected schemas to be a JSON array."},
         )
 
-    store = IndexStore()
+    store = mods.IndexStore()
     current = store.load() or {}
     current_total = _safe_int(current.get("total_tools"))
     if raw_schemas is None and current_total > len(schemas):
@@ -225,54 +242,57 @@ async def rebuild_index(payload: dict[str, Any] | None = Body(default=None)) -> 
 
 @router.get("/summary")
 async def summary(limit: int = Query(default=1000, ge=1, le=10000)) -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, _apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, _run_doctor, _load_config, _IndexStore, _read_decisions, summarize_decisions = _load_modules()
+    mods = _load_modules()
     return {
         "ok": True,
-        "summary": summarize_decisions(limit=limit, require_session=True),
-        "all_summary": summarize_decisions(limit=limit),
+        "summary": mods.summarize_decisions(limit=limit, require_session=True),
+        "all_summary": mods.summarize_decisions(limit=limit),
     }
 
 
 @router.get("/events")
 async def events(limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, _apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, _run_doctor, _load_config, _IndexStore, read_decisions, _summarize_decisions = _load_modules()
-    return {"ok": True, "events": read_decisions(limit=limit)}
+    mods = _load_modules()
+    return {"ok": True, "events": mods.read_decisions(limit=limit)}
 
 
 @router.get("/advisor")
 async def advisor(limit: int = Query(default=1000, ge=1, le=10000)) -> dict[str, Any]:
-    analyze_config, _apply_recommended_config, _apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, _run_doctor, load_config, IndexStore, _read_decisions, summarize_decisions = _load_modules()
+    mods = _load_modules()
     try:
-        cfg = load_config()
+        cfg = mods.load_config()
     except Exception as exc:
         from hermes_tool_slimmer.config import ToolSlimmerConfig
 
         cfg = ToolSlimmerConfig(enabled=False)
-        return {"ok": False, "error": str(exc), "advisor": analyze_config(cfg, summarize_decisions(limit=limit, require_session=True), 0)}
-    index = IndexStore().load() or {}
+        return {"ok": False, "error": str(exc), "advisor": mods.analyze_config(cfg, mods.summarize_decisions(limit=limit, require_session=True), 0)}
+    index = mods.IndexStore().load() or {}
     documents = index.get("documents") if isinstance(index.get("documents"), list) else []
     available = {str(doc.get("name")) for doc in documents if isinstance(doc, dict) and doc.get("name")}
-    return {"ok": True, "advisor": analyze_config(cfg, summarize_decisions(limit=limit, require_session=True), _safe_int(index.get("total_tools")), available_tools=available)}
+    return {"ok": True, "advisor": mods.analyze_config(cfg, mods.summarize_decisions(limit=limit, require_session=True), _safe_int(index.get("total_tools")), available_tools=available)}
 
 
 @router.post("/advisor/apply")
 async def advisor_apply(payload: dict[str, Any] | None = Body(default=None)) -> dict[str, Any]:
-    _analyze_config, apply_recommended_config, _apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, _run_doctor, _load_config, _IndexStore, _read_decisions, _summarize_decisions = _load_modules()
+    mods = _load_modules()
     recommended = (payload or {}).get("recommended_config")
     if recommended is not None and not isinstance(recommended, dict):
         raise HTTPException(status_code=400, detail={"error": "invalid_recommended_config", "message": "recommended_config must be an object."})
-    return apply_recommended_config(recommended)
+    result = mods.apply_recommended_config(recommended)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @router.post("/advisor/tool-preference")
 async def advisor_tool_preference(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, _run_doctor, _load_config, _IndexStore, _read_decisions, _summarize_decisions = _load_modules()
+    mods = _load_modules()
     tool = payload.get("tool")
     action = payload.get("action")
     profile = payload.get("profile") or "default"
     if not tool or action not in {"always_include", "always_exclude"}:
         raise HTTPException(status_code=400, detail={"error": "invalid_tool_preference", "message": "Send tool plus action always_include or always_exclude."})
-    result = apply_tool_preference(str(tool), str(action), profile=str(profile))
+    result = mods.apply_tool_preference(str(tool), str(action), profile=str(profile))
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result)
     return result
@@ -280,20 +300,21 @@ async def advisor_tool_preference(payload: dict[str, Any] = Body(...)) -> dict[s
 
 @router.post("/advisor/rollback")
 async def advisor_rollback(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, _apply_tool_preference, rollback_config, _eval_markdown, _eval_prompts, _privacy_inventory, _run_doctor, _load_config, _IndexStore, _read_decisions, _summarize_decisions = _load_modules()
+    mods = _load_modules()
     backup_path = payload.get("backup_path")
     if not backup_path:
         raise HTTPException(status_code=400, detail={"error": "backup_path_required", "message": "Send backup_path from advisor/apply."})
-    result = rollback_config(str(backup_path))
+    result = mods.rollback_config(str(backup_path))
     if not result.get("ok"):
-        raise HTTPException(status_code=404, detail=result)
+        status_code = 404 if result.get("error") == "backup_not_found" else 400
+        raise HTTPException(status_code=status_code, detail=result)
     return result
 
 
 @router.get("/privacy")
 async def privacy() -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, _apply_tool_preference, _rollback_config, _eval_markdown, _eval_prompts, privacy_inventory, _run_doctor, _load_config, _IndexStore, _read_decisions, _summarize_decisions = _load_modules()
-    return {"ok": True, "privacy": privacy_inventory()}
+    mods = _load_modules()
+    return {"ok": True, "privacy": mods.privacy_inventory()}
 
 
 @router.get("/diagnostics")
@@ -311,15 +332,14 @@ async def diagnostics(limit: int = Query(default=200, ge=1, le=10000)) -> dict[s
 
 @router.get("/eval-report")
 async def eval_report() -> dict[str, Any]:
-    _analyze_config, _apply_recommended_config, _apply_tool_preference, _rollback_config, eval_markdown, eval_prompts, _privacy_inventory, _run_doctor, load_config, _IndexStore, _read_decisions, _summarize_decisions = _load_modules()
-    from pathlib import Path
+    mods = _load_modules()
     import yaml
 
     def _load_example_list(path: Path, key: str) -> list[dict[str, Any]]:
         if not path.exists():
             return []
         try:
-            data = yaml.safe_load(path.read_text()) or {}
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         except (OSError, yaml.YAMLError):
             return []
         if isinstance(data, dict):
@@ -338,10 +358,10 @@ async def eval_report() -> dict[str, Any]:
     schemas = _load_example_list(schemas_path, "tools")
     prompts = _load_example_list(prompts_path, "prompts")
     try:
-        cfg = load_config()
+        cfg = mods.load_config()
     except Exception:
         from hermes_tool_slimmer.config import ToolSlimmerConfig
 
         cfg = ToolSlimmerConfig(enabled=False)
-    report = eval_prompts(cfg, schemas, prompts)
-    return {"ok": True, "markdown": eval_markdown(report), "report": report}
+    report = mods.eval_prompts(cfg, schemas, prompts)
+    return {"ok": True, "markdown": mods.eval_markdown(report), "report": report}

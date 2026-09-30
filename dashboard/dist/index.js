@@ -139,6 +139,7 @@
     const latestDecision = recent.length ? recent[recent.length - 1] : null;
     const latestMetrics = latestDecision && latestDecision.metrics ? latestDecision.metrics : {};
     const latestSelected = latestMetrics.selected || [];
+    const tuneTools = latestSelected.slice(0, 50);
     const latestCandidates = latestMetrics.top_candidates || [];
     const twoPass = config.two_pass || {};
     const recentTwoPass = recent.filter(function (event) {
@@ -158,7 +159,7 @@
     const tuneProfile = latestDecision && latestDecision.context && latestDecision.context.platform
       ? latestDecision.context.platform
       : "default";
-    const selectedTuneTool = tuneTool || latestSelected[0] || "";
+    const selectedTuneTool = tuneTool || tuneTools[0] || "";
 
     const topTools = useMemo(function () {
       return Object.entries(summary.top_selected_tools || {}).slice(0, 10);
@@ -309,12 +310,13 @@
             latestSelected.length > 0 && React.createElement(React.Fragment, null,
               React.createElement("div", { className: "tool-slimmer-muted" }, "Use this when a recent decision clearly picked or missed a tool. Changes are scoped to ", React.createElement("span", { className: "font-courier" }, tuneProfile), "."),
               React.createElement(ToolPills, { tools: latestSelected, limit: 10 }),
+              latestSelected.length > tuneTools.length && React.createElement("div", { className: "tool-slimmer-muted text-xs" }, "Showing the first ", String(tuneTools.length), " selected tools for tuning."),
               React.createElement("div", { className: "tool-slimmer-action-row" },
                 React.createElement("select", {
                   className: "tool-slimmer-select",
                   value: selectedTuneTool,
                   onChange: function (event) { setTuneTool(event.target.value); },
-                }, latestSelected.map(function (tool) {
+                }, tuneTools.map(function (tool) {
                   return React.createElement("option", { key: tool, value: tool }, tool);
                 })),
                 React.createElement(Button, { variant: "outline", onClick: function () { setToolPreference(selectedTuneTool, "always_include", tuneProfile); }, disabled: advisorBusy || !selectedTuneTool }, "Always include"),

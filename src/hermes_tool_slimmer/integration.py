@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import re
+from collections import OrderedDict
 from time import perf_counter
 from typing import Any
 
@@ -32,7 +33,30 @@ FALLBACK_INSTRUCTION = (
 )
 
 _TOOL_NAME_RE = re.compile(r"\b[a-z][a-z0-9_]{2,}\b")
-_HYDRATED_BY_SESSION: dict[str, set[str]] = {}
+# Long-lived gateways see many sessions; keep only the most recent hydration sets.
+_HYDRATED_SESSION_LIMIT = 256
+_HYDRATED_BY_SESSION: OrderedDict[str, set[str]] = OrderedDict()
+_LAST_LIVE_SNAPSHOT_KEY: tuple[object, ...] | None = None
+
+
+def _session_hydration_cache(session_id: str) -> set[str]:
+    cached = _HYDRATED_BY_SESSION.pop(session_id, None)
+    if cached is None:
+        cached = set()
+    _HYDRATED_BY_SESSION[session_id] = cached
+    while len(_HYDRATED_BY_SESSION) > _HYDRATED_SESSION_LIMIT:
+        _HYDRATED_BY_SESSION.popitem(last=False)
+    return cached
+
+
+def _log_decision(cfg: ToolSlimmerConfig, message: str, metrics: dict[str, object], context: dict[str, object]) -> None:
+    if not cfg.log_decisions:
+        return
+    LOG.info(message, extra={"tool_slimmer": metrics})
+    try:
+        record_decision(metrics, context)
+    except Exception as exc:
+        LOG.warning("tool-slimmer decision logging failed: %s", exc)
 
 
 def _load_config_for_hook() -> ToolSlimmerConfig:
@@ -46,10 +70,16 @@ def _load_config_for_hook() -> ToolSlimmerConfig:
 def _sync_live_index(schemas: list[Schema], min_total_tools: int, context: dict[str, Any] | None = None) -> None:
     if len(schemas) < min_total_tools:
         return
+    global _LAST_LIVE_SNAPSHOT_KEY
     try:
         store = IndexStore()
         if context and context.get("session_id"):
-            store.save_live_schemas(schemas, context)
+            # Every model call in a tool loop sends the same catalog; only
+            # rewrite the snapshot when the catalog or request context changes.
+            snapshot_key = (str(store.root), IndexStore.checksum(schemas), *sorted((str(k), str(v)) for k, v in context.items()))
+            if snapshot_key != _LAST_LIVE_SNAPSHOT_KEY:
+                store.save_live_schemas(schemas, context)
+                _LAST_LIVE_SNAPSHOT_KEY = snapshot_key
         current = store.load() or {}
         current_total = current.get("total_tools")
         if isinstance(current_total, int) and current_total > len(schemas):
@@ -122,7 +152,7 @@ def _two_pass_selected_schemas(
     requested = [name for name in requested_hydration_tools(conversation_history) if name in schemas_by_name]
     requested = requested[: cfg.two_pass.hydrate_limit]
     cache_key = session_id or ""
-    cached = _HYDRATED_BY_SESSION.setdefault(cache_key, set()) if cache_key else set()
+    cached = _session_hydration_cache(cache_key) if cache_key else set()
     if requested and cfg.two_pass.cache_hydrated_tools and cache_key:
         cached.update(requested)
     hydrated = sorted((cached if cfg.two_pass.cache_hydrated_tools else set()) | set(requested))
@@ -258,18 +288,20 @@ def select_tool_schemas_callback(
     cfg = cfg.for_context(platform=platform)
     if not cfg.enabled:
         return None
+    decision_context: dict[str, object] = {
+        "provider": provider,
+        "model": model,
+        "platform": platform,
+        "session_id": session_id,
+        "dry_run": cfg.dry_run,
+        "schema_count": len(schemas),
+    }
     try:
         started = perf_counter()
         _sync_live_index(
             schemas,
             cfg.min_total_tools,
-            {
-                "provider": provider,
-                "model": model,
-                "platform": platform,
-                "session_id": session_id,
-                "schema_count": len(schemas),
-            },
+            {key: value for key, value in decision_context.items() if key != "dry_run"},
         )
         if native_tool_search_active(schemas):
             bridge_tools = native_tool_search_bridge_names(schemas)
@@ -279,22 +311,7 @@ def select_tool_schemas_callback(
             metrics["skip_reason"] = "native_hermes_tool_search_active"
             metrics["native_hermes_tool_search"] = True
             metrics["native_hermes_bridge_tools"] = bridge_tools
-            if cfg.log_decisions:
-                LOG.info("tool-slimmer skipped; Hermes native Tool Search is active", extra={"tool_slimmer": metrics})
-                try:
-                    record_decision(
-                        metrics,
-                        {
-                            "provider": provider,
-                            "model": model,
-                            "platform": platform,
-                            "session_id": session_id,
-                            "dry_run": cfg.dry_run,
-                            "schema_count": len(schemas),
-                        },
-                    )
-                except Exception as exc:
-                    LOG.warning("tool-slimmer decision logging failed: %s", exc)
+            _log_decision(cfg, "tool-slimmer skipped; Hermes native Tool Search is active", metrics, decision_context)
             return None
         policy_schemas = eligible_schemas(schemas, cfg)
         if _full_tools_requested(conversation_history):
@@ -302,22 +319,7 @@ def select_tool_schemas_callback(
             metrics["selection_ms"] = round((perf_counter() - started) * 1000, 3)
             metrics["skipped"] = True
             metrics["skip_reason"] = "full_tools_requested"
-            if cfg.log_decisions:
-                LOG.info("tool-slimmer full schema fallback", extra={"tool_slimmer": metrics})
-                try:
-                    record_decision(
-                        metrics,
-                        {
-                            "provider": provider,
-                            "model": model,
-                            "platform": platform,
-                            "session_id": session_id,
-                            "dry_run": cfg.dry_run,
-                            "schema_count": len(schemas),
-                        },
-                    )
-                except Exception as exc:
-                    LOG.warning("tool-slimmer decision logging failed: %s", exc)
+            _log_decision(cfg, "tool-slimmer full schema fallback", metrics, decision_context)
             return None if cfg.dry_run else policy_schemas
         if len(schemas) < cfg.min_total_tools:
             metrics = reduction_metrics(cfg.mode, schemas, policy_schemas, [])
@@ -325,22 +327,7 @@ def select_tool_schemas_callback(
             metrics["skipped"] = True
             metrics["skip_reason"] = "below_min_total_tools"
             metrics["min_total_tools"] = cfg.min_total_tools
-            if cfg.log_decisions:
-                LOG.info("tool-slimmer skipped", extra={"tool_slimmer": metrics})
-                try:
-                    record_decision(
-                        metrics,
-                        {
-                            "provider": provider,
-                            "model": model,
-                            "platform": platform,
-                            "session_id": session_id,
-                            "dry_run": cfg.dry_run,
-                            "schema_count": len(schemas),
-                        },
-                    )
-                except Exception as exc:
-                    LOG.warning("tool-slimmer decision logging failed: %s", exc)
+            _log_decision(cfg, "tool-slimmer skipped", metrics, decision_context)
             if cfg.dry_run or len(policy_schemas) == len(schemas):
                 return None
             return policy_schemas
@@ -355,9 +342,7 @@ def select_tool_schemas_callback(
                 session_id,
             )
             if two_pass_fallback == "missing_hydrate_tool" and cfg.two_pass.fallback_to_keyword:
-                fallback_cfg = ToolSlimmerConfig.from_mapping(
-                    {**cfg.__dict__, "mode": "keyword", "anthropic": cfg.anthropic.__dict__, "two_pass": cfg.two_pass.__dict__}
-                )
+                fallback_cfg = cfg.with_mode("keyword")
                 result = ToolSelector(fallback_cfg).select(
                     query,
                     policy_schemas,
@@ -409,9 +394,7 @@ def select_tool_schemas_callback(
         if cfg.mode == "anthropic_tool_search" and selected is policy_schemas:
             # Unsupported provider path: fall back to deterministic keyword selection,
             # not the full catalog, unless the user explicitly chose eager mode.
-            fallback_cfg = ToolSlimmerConfig.from_mapping(
-                {**cfg.__dict__, "mode": "keyword", "anthropic": cfg.anthropic.__dict__, "two_pass": cfg.two_pass.__dict__}
-            )
+            fallback_cfg = cfg.with_mode("keyword")
             result = ToolSelector(fallback_cfg).select(
                 query,
                 policy_schemas,
@@ -447,22 +430,7 @@ def select_tool_schemas_callback(
             metrics["skipped"] = True
             metrics["skip_reason"] = "below_min_estimated_reduction_percent"
             metrics["min_estimated_reduction_percent"] = cfg.min_estimated_reduction_percent
-        if cfg.log_decisions:
-            LOG.info("tool-slimmer selection", extra={"tool_slimmer": metrics})
-            try:
-                record_decision(
-                    metrics,
-                    {
-                        "provider": provider,
-                        "model": model,
-                        "platform": platform,
-                        "session_id": session_id,
-                        "dry_run": cfg.dry_run,
-                        "schema_count": len(schemas),
-                    },
-                )
-            except Exception as exc:
-                LOG.warning("tool-slimmer decision logging failed: %s", exc)
+        _log_decision(cfg, "tool-slimmer selection", metrics, decision_context)
         if cfg.dry_run:
             return None
         return selected
@@ -488,55 +456,135 @@ def pre_llm_diagnostic_hook(**kwargs: Any) -> dict[str, str] | None:
     }
 
 
-def _known_valid_hooks(ctx: Any) -> set[str] | None:
-    valid_hooks = getattr(ctx, "valid_hooks", None) or getattr(ctx, "VALID_HOOKS", None)
-    manager = getattr(ctx, "_manager", None)
-    if valid_hooks is None and manager is not None:
-        valid_hooks = getattr(manager, "VALID_HOOKS", None) or getattr(manager, "valid_hooks", None)
-    if valid_hooks is None:
-        try:
-            from hermes_cli.plugins import VALID_HOOKS  # type: ignore[import-not-found]
-        except Exception:
-            return None
-        valid_hooks = VALID_HOOKS
+SELECTOR_HOOK = "select_tool_schemas"
+LLM_REQUEST_MIDDLEWARE = "llm_request"
+SURFACE_HOOK = "select_tool_schemas_hook"
+SURFACE_MIDDLEWARE = "llm_request_middleware"
+
+# Modules that carry the turn loop across Hermes layouts; the installer's core
+# patch inserts the select_tool_schemas call site into one of them.
+_CORE_LOOP_MODULES = ("agent.conversation_loop", "agent.turn_api_request", "run_agent")
+
+
+def _as_name_set(value: Any) -> set[str] | None:
+    if value is None:
+        return None
     try:
-        return {str(hook) for hook in valid_hooks}
+        return {str(item) for item in value}
     except TypeError:
         return None
 
 
-def maybe_register_selector_hook(ctx: Any) -> bool:
-    """Register the selector with Hermes if a selector hook surface exists.
+def _known_valid_hooks(ctx: Any = None) -> set[str] | None:
+    """Hook names Hermes advertises, or None when they cannot be discovered."""
+    for owner in (ctx, getattr(ctx, "_manager", None)):
+        for attr in ("valid_hooks", "VALID_HOOKS"):
+            found = _as_name_set(getattr(owner, attr, None)) if owner is not None else None
+            if found is not None:
+                return found
+    try:
+        from hermes_cli.plugins import VALID_HOOKS  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    return _as_name_set(VALID_HOOKS)
 
-    Returns True when a known registration method accepted the callback. This
-    avoids monkeypatching: unsupported Hermes versions keep diagnostics/CLI only.
+
+def _known_valid_middleware(ctx: Any = None) -> set[str] | None:
+    """Middleware kinds Hermes advertises, or None when they cannot be discovered."""
+    for attr in ("valid_middleware", "VALID_MIDDLEWARE"):
+        found = _as_name_set(getattr(ctx, attr, None)) if ctx is not None else None
+        if found is not None:
+            return found
+    try:
+        from hermes_cli.middleware import VALID_MIDDLEWARE  # type: ignore[import-not-found]
+    except Exception:
+        return None
+    return _as_name_set(VALID_MIDDLEWARE)
+
+
+def _core_invokes_selector_hook() -> bool | None:
+    """Whether Hermes core source calls ``select_tool_schemas``.
+
+    Returns None when no known turn-loop module is found (unknown layout). A
+    ``False`` here with the hook advertised means a partially applied core patch:
+    Hermes accepts the registration but never calls it.
     """
-    selector_registered = False
+    import importlib.util
+    from pathlib import Path
+
+    found_any = False
+    for module_name in _CORE_LOOP_MODULES:
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except (ImportError, ValueError):
+            continue
+        if spec is None or not spec.origin or not spec.origin.endswith(".py"):
+            continue
+        found_any = True
+        try:
+            if f'"{SELECTOR_HOOK}"' in Path(spec.origin).read_text(encoding="utf-8", errors="replace"):
+                return True
+        except OSError:
+            continue
+    return False if found_any else None
+
+
+def resolve_selector_surface(ctx: Any = None) -> str | None:
+    """Pick the Hermes surface that can apply schema selection, preferring the core hook.
+
+    The core hook sees the canonical schema list and turn message; the
+    ``llm_request`` middleware ships in Hermes v0.19+ and needs no core patch.
+    Only one surface is used so requests are never slimmed twice.
+    """
+    valid_hooks = _known_valid_hooks(ctx)
+    if valid_hooks is not None and SELECTOR_HOOK in valid_hooks and _core_invokes_selector_hook() is not False:
+        return SURFACE_HOOK
+    valid_middleware = _known_valid_middleware(ctx)
+    middleware_ok = LLM_REQUEST_MIDDLEWARE in valid_middleware if valid_middleware is not None else None
+    if middleware_ok and (ctx is None or callable(getattr(ctx, "register_middleware", None))):
+        return SURFACE_MIDDLEWARE
+    if ctx is not None and valid_hooks is None and valid_middleware is None:
+        # Nothing advertised: try whichever registration method exists.
+        if callable(getattr(ctx, "register_middleware", None)):
+            return SURFACE_MIDDLEWARE
+        if callable(getattr(ctx, "register_hook", None)):
+            return SURFACE_HOOK
+    return None
+
+
+def maybe_register_selector_hook(ctx: Any) -> bool:
+    """Register the selector with the best Hermes surface available.
+
+    Returns True when a registration method accepted the callback. This avoids
+    monkeypatching: unsupported Hermes versions keep diagnostics/CLI only.
+    """
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         try:
             register_hook("pre_llm_call", pre_llm_diagnostic_hook)
         except Exception as exc:  # pragma: no cover - depends on Hermes version
             LOG.warning("pre_llm_call diagnostic hook registration failed: %s", exc)
-    callback = select_tool_schemas_callback
     for method_name in ("register_tool_schema_selector", "register_schema_selector"):
         method = getattr(ctx, method_name, None)
         if callable(method):
             try:
-                method(callback)
+                method(select_tool_schemas_callback)
                 return True
             except Exception as exc:
                 LOG.warning("%s registration failed: %s", method_name, exc)
-    if callable(register_hook):
-        valid_hooks = _known_valid_hooks(ctx)
-        if valid_hooks is not None and "select_tool_schemas" not in valid_hooks:
-            LOG.warning("Hermes selector hook is unavailable; tool-slimmer will run diagnostics only")
-            return False
-        try:
-            register_hook("select_tool_schemas", callback)
-            selector_registered = True
-        except Exception as exc:
-            LOG.warning("select_tool_schemas hook registration failed: %s", exc)
-    if not selector_registered:
-        LOG.warning("Hermes selector hook is unavailable; tool-slimmer will run diagnostics only")
-    return selector_registered
+
+    surface = resolve_selector_surface(ctx)
+    try:
+        if surface == SURFACE_HOOK and callable(register_hook):
+            register_hook(SELECTOR_HOOK, select_tool_schemas_callback)
+            return True
+        if surface == SURFACE_MIDDLEWARE:
+            from .middleware import llm_request_middleware
+
+            ctx.register_middleware(LLM_REQUEST_MIDDLEWARE, llm_request_middleware)
+            LOG.info("tool-slimmer selecting tool schemas through Hermes llm_request middleware")
+            return True
+    except Exception as exc:
+        LOG.warning("tool-slimmer %s registration failed: %s", surface, exc)
+    LOG.warning("Hermes selector surface is unavailable; tool-slimmer will run diagnostics only")
+    return False

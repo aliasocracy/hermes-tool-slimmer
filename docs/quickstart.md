@@ -30,7 +30,7 @@ Run the installer:
 scripts/install-hermes-tool-slimmer.sh
 ```
 
-The installer handles the Python package, dashboard files, Hermes plugin enablement, Hermes core selector hook, service restart, and final verification. Its core patcher supports both older monolithic Hermes cores and the current v0.14.0 modular core layout.
+The installer handles the Python package, dashboard files, Hermes plugin enablement, the selector surface check, service restart, and final verification. Hermes v0.19+ needs no core patch (Tool Slimmer uses the `llm_request` middleware); older Hermes cores get the compatibility patch.
 
 If it finishes successfully, run:
 
@@ -184,6 +184,6 @@ A schema file can be a YAML list or an object containing `tools:` / `schemas:`.
 
 ## 5. Enable active schema slimming
 
-Set `dry_run: false` only after `doctor` reports a Hermes core selector hook. If it warns that `select_tool_schemas` is missing, rerun `scripts/install-hermes-tool-slimmer.sh`; the installer applies the local compatibility patch. Do not paste or manually apply `docs/hermes-core-selector-hook.patch` unless you are developing a Hermes core PR.
+Set `dry_run: false` only after `doctor` reports a selector surface (`core_selector_hook` passes with `select_tool_schemas_hook` or `llm_request_middleware`). If it warns that none is available, upgrade Hermes to v0.19+ or rerun `scripts/install-hermes-tool-slimmer.sh`; the installer applies the local compatibility patch. Do not paste or manually apply `docs/hermes-core-selector-hook.patch` unless you are developing a Hermes core PR.
 
 The installer patches the local Hermes core automatically when that hook is missing. Use `scripts/install-hermes-tool-slimmer.sh --no-core-patch` only when you want to manage Hermes core changes yourself.

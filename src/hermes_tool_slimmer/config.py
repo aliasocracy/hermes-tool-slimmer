@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import os
 import math
+import os
+import sys
 from collections.abc import Collection
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +124,12 @@ class ToolSlimmerConfig:
         for overlay in overlays:
             _merge_profile_overlay(raw, overlay)
         return ToolSlimmerConfig.from_mapping(raw)
+
+    def with_mode(self, mode: str) -> "ToolSlimmerConfig":
+        """Return a validated copy of this config using ``mode``."""
+        cfg = replace(self, mode=mode)
+        cfg.validate()
+        return cfg
 
     @property
     def always_exclude(self) -> list[str]:
@@ -288,7 +295,21 @@ def _dedupe_strings(values: list[Any]) -> list[str]:
 
 
 def hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")).expanduser()
+    """Hermes home directory, resolved the same way Hermes itself does when importable."""
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        return Path(env_home).expanduser()
+    try:
+        from hermes_constants import get_hermes_home  # type: ignore[import-not-found]
+
+        return Path(get_hermes_home()).expanduser()
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    return Path.home() / ".hermes"
 
 
 def config_path() -> Path:
@@ -300,8 +321,8 @@ def load_config(path: str | Path | None = None, *, strict: bool = False) -> Tool
     if not target.is_file():
         return ToolSlimmerConfig()
     try:
-        data = yaml.safe_load(target.read_text()) or {}
-    except yaml.YAMLError as exc:
+        data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, UnicodeDecodeError) as exc:
         if strict:
             raise ValueError(f"Could not parse tool_slimmer config: {target}") from exc
         return ToolSlimmerConfig()
