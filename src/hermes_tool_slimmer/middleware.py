@@ -12,6 +12,7 @@ it does not recognize is left untouched.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .corpus import tool_name
@@ -77,6 +78,10 @@ def normalize_history(items: Any) -> list[dict[str, Any]]:
             continue
         role = item.get("role")
         content = item.get("content")
+        if role in {"system", "developer"}:
+            # Hermes' canonical history excludes the system prompt, and its tool
+            # mentions would otherwise read as "recently needed" tools.
+            continue
         if role == "user" and isinstance(content, list):
             # Anthropic carries tool results inside user messages.
             tool_results = [
@@ -99,6 +104,25 @@ def last_user_message(history: list[dict[str, Any]]) -> str:
             content = item.get("content")
             return content if isinstance(content, str) else _content_text(content)
     return ""
+
+
+_MEMORY_CONTEXT_RE = re.compile(r"<memory-context>.*?</memory-context>", re.S)
+
+
+def selection_query_text(wire_text: str, session_id: Any) -> str:
+    """Strip Hermes turn injections so ranking sees what the user typed.
+
+    Hermes sends ``user text + memory recall + pre_llm_call contexts``. Prefer the
+    clean message captured by our pre_llm_call hook; otherwise drop the fenced
+    memory block and our own fallback instruction.
+    """
+    from .integration import FALLBACK_INSTRUCTION, turn_user_message
+
+    clean = turn_user_message(session_id)
+    if clean and wire_text.startswith(clean):
+        return clean
+    text = _MEMORY_CONTEXT_RE.sub(" ", wire_text)
+    return text.replace(FALLBACK_INSTRUCTION, " ").strip()
 
 
 def _tool_choice_name(tool_choice: Any) -> str:
@@ -167,14 +191,15 @@ def llm_request_middleware(request: Any = None, **context: Any) -> dict[str, Any
     if not history and isinstance(request.get("input"), str):
         history = [{"role": "user", "content": request["input"]}]
 
+    session_id = context.get("session_id") or None
     selected = select_tool_schemas_callback(
-        last_user_message(history),
+        selection_query_text(last_user_message(history), session_id),
         history,
         function_tools,
         model=str(context.get("model") or request.get("model") or ""),
         platform=str(context.get("platform") or ""),
         provider=context.get("provider"),
-        session_id=context.get("session_id") or None,
+        session_id=session_id,
     )
     if selected is None or [id(schema) for schema in selected] == [id(tool) for tool in function_tools]:
         return None

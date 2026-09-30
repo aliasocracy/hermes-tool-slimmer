@@ -37,6 +37,7 @@ _TOOL_NAME_RE = re.compile(r"\b[a-z][a-z0-9_]{2,}\b")
 _HYDRATED_SESSION_LIMIT = 256
 _HYDRATED_BY_SESSION: OrderedDict[str, set[str]] = OrderedDict()
 _LAST_LIVE_SNAPSHOT_KEY: tuple[object, ...] | None = None
+_TURN_USER_MESSAGES: OrderedDict[str, str] = OrderedDict()
 
 
 def _session_hydration_cache(session_id: str) -> set[str]:
@@ -441,7 +442,26 @@ def select_tool_schemas_callback(
         raise
 
 
+def _remember_turn_user_message(session_id: Any, user_message: Any) -> None:
+    if not session_id or not isinstance(user_message, str):
+        return
+    key = str(session_id)
+    _TURN_USER_MESSAGES.pop(key, None)
+    _TURN_USER_MESSAGES[key] = user_message
+    while len(_TURN_USER_MESSAGES) > _HYDRATED_SESSION_LIMIT:
+        _TURN_USER_MESSAGES.popitem(last=False)
+
+
+def turn_user_message(session_id: Any) -> str | None:
+    """The clean user message Hermes passed to ``pre_llm_call`` for this session's turn."""
+    return _TURN_USER_MESSAGES.get(str(session_id)) if session_id else None
+
+
 def pre_llm_diagnostic_hook(**kwargs: Any) -> dict[str, str] | None:
+    # Hermes appends memory recall and every plugin's pre_llm_call context to the
+    # user message it sends, which is all the llm_request middleware can see.
+    # Keep the clean message so selection ranks against what the user typed.
+    _remember_turn_user_message(kwargs.get("session_id"), kwargs.get("user_message"))
     cfg = _load_config_for_hook()
     if not cfg.enabled:
         return None

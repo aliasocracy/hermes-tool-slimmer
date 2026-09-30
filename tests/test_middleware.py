@@ -271,3 +271,47 @@ def test_hydrate_tool_schema_preserves_anthropic_input_schema():
     schema = hydrate_tool_schema(base, [])
     assert "parameters" not in schema
     assert schema["input_schema"]["required"] == ["tools"]
+
+
+def test_middleware_ranks_clean_user_message_not_hermes_injections(isolated_home):
+    from hermes_tool_slimmer.integration import FALLBACK_INSTRUCTION, pre_llm_diagnostic_hook
+    from hermes_tool_slimmer.middleware import selection_query_text
+
+    memory = "<memory-context>\n[System note: recalled]\nuser likes calendar events and email\n</memory-context>"
+    wire = f"search the web for news\n\n{memory}\n\n{FALLBACK_INSTRUCTION}\n\nother plugin: generate image"
+
+    # Without a recorded turn message, known injections are stripped.
+    stripped = selection_query_text(wire, "unknown-session")
+    assert "calendar" not in stripped
+    assert FALLBACK_INSTRUCTION not in stripped
+
+    # With the pre_llm_call record, the exact user text wins.
+    pre_llm_diagnostic_hook(session_id="s-clean", user_message="search the web for news")
+    assert selection_query_text(wire, "s-clean") == "search the web for news"
+
+    _write_config(isolated_home, top_k=1, always_include=[], min_estimated_reduction_percent=0)
+    tools = [_openai_tool(name, desc) for name, desc in CATALOG]
+    request = {"messages": [{"role": "user", "content": wire}], "tools": tools}
+    result = llm_request_middleware(request=request, session_id="s-clean", platform="cli")
+    names = [tool["function"]["name"] for tool in result["request"]["tools"]]
+    assert "web_search" in names
+    assert "calendar_create" not in names
+    assert "image_generate" not in names
+
+
+def test_system_prompt_tool_mentions_do_not_boost_selection(isolated_home):
+    _write_config(isolated_home, top_k=1, always_include=[], min_estimated_reduction_percent=0)
+    tools = [_openai_tool(name, desc) for name, desc in CATALOG]
+    request = {
+        "messages": [
+            {"role": "system", "content": "You can use send_email, calendar_create and image_generate."},
+            {"role": "user", "content": "search the web for news"},
+        ],
+        "tools": tools,
+    }
+
+    result = llm_request_middleware(request=request, session_id="s-sys", platform="cli")
+
+    names = [tool["function"]["name"] for tool in result["request"]["tools"]]
+    assert "web_search" in names
+    assert not {"send_email", "calendar_create", "image_generate"} & set(names)
