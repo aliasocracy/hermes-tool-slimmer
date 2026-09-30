@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 - Unreleased
+
+### Added
+
+- Experimental `mode: jev`: the keyword shortlist is re-ranked by TypeSafe's Jev decision model with one yes/no probability per candidate tool, answered in a single request. Tools at or above `jev.threshold` are kept, results are cached for the rest of the turn, and any Jev failure falls back to keyword selection with a cooldown. The API key is read from `TYPESAFE_API_KEY`.
+- `doctor` reports whether the Jev API key is available, and `privacy` lists what `jev` mode sends to TypeSafe.
+- The model-callable `tool_slimmer_select` tool cannot switch to `jev` unless it is already the configured mode, so the agent cannot start external calls on its own.
+
 ## 0.7.0 - 2026-09-30
 
 Hermes v0.19+ selector compatibility and cleanup release.

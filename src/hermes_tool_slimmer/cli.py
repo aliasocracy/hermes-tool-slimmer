@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import platform
 import sys
 from pathlib import Path
@@ -116,7 +117,8 @@ def analyze_config(cfg: ToolSlimmerConfig, summary: dict[str, object] | None = N
     return _advisor_analyze_config(cfg, summary, indexed_tools)
 
 
-def privacy_inventory() -> dict[str, object]:
+def privacy_inventory(cfg: ToolSlimmerConfig | None = None) -> dict[str, object]:
+    cfg = cfg or load_config()
     return {
         "ok": True,
         "raw_prompts_logged": False,
@@ -149,9 +151,23 @@ def privacy_inventory() -> dict[str, object]:
             "two_pass_phase",
             "native_hermes_tool_search",
             "native_hermes_bridge_tools",
+            "jev_model",
+            "jev_candidates",
+            "jev_input_tokens",
+            "jev_ms",
+            "jev_cache_hit",
+            "jev_fallback",
         ],
+        "external_services": {
+            "typesafe_jev": {
+                "active": cfg.mode == "jev",
+                "endpoint": cfg.jev.base_url,
+                "sends": ["user request text for the turn", "candidate tool names", "candidate tool descriptions"],
+            }
+        },
         "notes": [
             "Raw user prompts are not written to decisions.jsonl.",
+            "mode: jev sends each turn's user request and candidate tool descriptions to TypeSafe; other modes make no network calls.",
             "Dashboard headline totals exclude events without a session_id.",
             "Score details include tool names and numeric ranking components.",
         ],
@@ -456,6 +472,15 @@ def run_doctor(
         "Experimental two_pass mode is active" if cfg.mode == "two_pass" else "Experimental two_pass mode is not active",
         cfg.two_pass.__dict__,
     )
+    if cfg.mode == "jev":
+        has_key = bool(os.environ.get(cfg.jev.api_key_env, "").strip())
+        checks["jev"] = _check(
+            "pass" if has_key else "warn",
+            f"jev mode will rank tools with TypeSafe {cfg.jev.model}"
+            if has_key
+            else f"jev mode is active but {cfg.jev.api_key_env} is not set; selection falls back to keyword",
+            {"model": cfg.jev.model, "api_key_env": cfg.jev.api_key_env, "api_key_present": has_key, "threshold": cfg.jev.threshold},
+        )
     return {"ok": all(v["status"] != "fail" for v in checks.values()), "checks": checks}
 
 

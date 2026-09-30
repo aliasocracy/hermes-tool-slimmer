@@ -14,7 +14,7 @@ from .index_store import IndexStore
 from .metrics import record_decision, reduction_metrics
 from .native import native_tool_search_active, native_tool_search_bridge_names
 from .policy import eligible_schemas
-from .selector import ToolSelector
+from .selector import TOOL_MENTIONS_MARKER, ToolSelector
 from .tools import FULL_TOOLS_REQUEST_MARKER
 from .two_pass import (
     HYDRATE_TOOL_NAME,
@@ -271,7 +271,7 @@ def _selection_query(user_message: str, conversation_history: list[Any] | None, 
     mentions = _recent_tool_mentions(conversation_history, schemas)
     if not mentions:
         return user_message
-    return f"{user_message}\n\nRecent missing/needed tool mentions: {' '.join(mentions)}"
+    return f"{user_message}{TOOL_MENTIONS_MARKER}{' '.join(mentions)}"
 
 
 def select_tool_schemas_callback(

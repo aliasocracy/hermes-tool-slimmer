@@ -129,6 +129,9 @@ def tool_slimmer_select(args: dict, **kwargs: Any) -> str:
         mode = args.get("mode")
         if mode == "eager":
             return _json({"ok": False, "error": "mode_not_allowed", "message": "eager mode is not available through the model-callable selector."})
+        if mode == "jev" and cfg.mode != "jev":
+            # jev sends the request text to TypeSafe; only the user can opt in via config.
+            return _json({"ok": False, "error": "mode_not_allowed", "message": "jev mode must be enabled in tool_slimmer config before the selector can use it."})
         if mode is not None:
             cfg = cfg.with_mode(str(mode))
         schemas, schema_source = _resolve_schemas(args, kwargs)

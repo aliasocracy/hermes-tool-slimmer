@@ -170,7 +170,7 @@ plugins:
 
 tool_slimmer:
   enabled: true
-  mode: keyword        # eager | keyword | hybrid | anthropic_tool_search | two_pass
+  mode: keyword        # eager | keyword | hybrid | anthropic_tool_search | two_pass | jev
   top_k: 8             # selected after always_include
   always_include: [terminal, read_file, write_file, patch, search_files]
   always_exclude: []   # alias for disabled_tools; useful for noisy tools in text-only deployments
@@ -188,6 +188,13 @@ tool_slimmer:
     max_catalog_tools: 120
     cache_hydrated_tools: true
     fallback_to_keyword: true
+  jev:                 # only used by mode: jev
+    model: jev-latest
+    api_key_env: TYPESAFE_API_KEY
+    threshold: 0.5     # keep tools Jev rates at least this likely to be needed
+    shortlist: 32      # keyword-ranked candidates sent to Jev
+    timeout_seconds: 1.5
+    cooldown_seconds: 60
   profiles:
     telegram:
       top_k: 4
@@ -210,6 +217,18 @@ tool_slimmer:
 In two-pass mode, the first request receives your `always_include` tools plus `tool_slimmer_hydrate_tools`. That hydration tool carries a compact deterministic catalog of available tool names, one-line descriptions, toolsets, and tags. If the model needs tools, it calls `tool_slimmer_hydrate_tools` with multiple names in one batch; the next request exposes those full schemas and caches them for the session when `cache_hydrated_tools: true`.
 
 Keep `keyword` as the default for normal use. Two-pass can add one extra model round trip before tool use, and current Hermes history may still record the compact hydration tool call. It avoids external delegation and avoids injecting the full catalog on ordinary no-tool turns.
+
+### Experimental Jev Mode
+
+`mode: jev` re-ranks the keyword shortlist with [TypeSafe Jev](https://docs.typesafe.ai/introduction), a fast decision model that returns calibrated probabilities instead of text. Tool Slimmer asks one yes/no question per candidate tool ("would an assistant need to call this tool to fulfill the request?") in a single request, then keeps your `always_include` tools plus the candidates at or above `jev.threshold`, capped at `top_k`.
+
+- Set `TYPESAFE_API_KEY` (or the variable named by `jev.api_key_env`) in the environment Hermes runs in, then restart Hermes.
+- One Jev call per user turn: model calls later in the same tool loop reuse the cached answer.
+- On a missing key, timeout, rate limit, or malformed response, selection falls back to keyword for that call and Jev is skipped for `cooldown_seconds`. It never falls back to sending nothing.
+- Greetings and other low-information turns skip Jev entirely.
+- **Privacy:** this is the only mode that makes a network call. Each turn's user request plus the candidate tools' names and descriptions go to TypeSafe. The decision log records Jev timing, token counts, and fallback reasons, not the request text.
+
+On a 38-tool Hermes install and 40 hand-written prompts, Jev included a needed tool for 34 of 34 tool prompts (keyword: 30 of 34), picked 2.8 tools beyond `always_include` on average instead of 8.1, added none on the 6 no-tool prompts, and cut the average tool payload from about 7.9k to 4.3k tokens (15.1k unslimmed). Median Jev latency was about 190 ms at roughly 4.8k input tokens (about $0.0002) per call. Raising `threshold` to 0.7 cut extras to 1.8 with no misses on that set; the default stays at 0.5 because real requests are messier than hand-written ones.
 
 ## Commands
 

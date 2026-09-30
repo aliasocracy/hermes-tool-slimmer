@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from typing import Iterable
 
 from .bm25 import BM25
 from .config import ToolSlimmerConfig
 from .corpus import build_corpus, tool_name
+from .jev import JevUnavailable, score_tools
 from .native import NATIVE_TOOL_SEARCH_BRIDGE_NAMES
 from .policy import eligible_schemas
 from .tokenizer import tokenize
@@ -26,6 +27,8 @@ NON_TASK_TOOL_NAMES = (
     *NATIVE_TOOL_SEARCH_BRIDGE_NAMES,
 )
 SKILL_COMPANION_TOOL_NAMES = ("skill_view", "skills_list")
+# The integration appends tools named in the current turn's tool loop to the query.
+TOOL_MENTIONS_MARKER = "\n\nRecent missing/needed tool mentions: "
 
 BUILTIN_ALIASES = {
     "browse": ["browser", "navigate", "url", "web", "website", "page"],
@@ -57,6 +60,20 @@ LOW_INFORMATION_TOKENS = {
 }
 
 
+@dataclass
+class _Ranking:
+    """Keyword ranking shared by keyword/hybrid selection and the Jev shortlist."""
+
+    eligible: list[Schema]
+    by_name: dict[str, Schema]
+    ranked_names: list[str]
+    scores: dict[str, float]
+    score_details: dict[str, dict[str, float]]
+    query_tokens: list[str]
+    always_selected: list[Schema]
+    always_present: list[str]
+
+
 class ToolSelector:
     def __init__(self, config: ToolSlimmerConfig | None = None) -> None:
         self.config = config or ToolSlimmerConfig()
@@ -71,6 +88,8 @@ class ToolSelector:
         if not self.config.enabled or self.config.mode == "eager":
             return SelectionResult(self.config.mode, schemas, [tool_name(s) for s in schemas], {}, len(schemas), [])
         try:
+            if self.config.mode == "jev":
+                return self._select_jev(user_message, schemas)
             return self._select_keyword(user_message, schemas)
         except Exception as exc:
             if self.config.fail_open:
@@ -80,7 +99,7 @@ class ToolSelector:
     def _eligible(self, schemas: Iterable[Schema]) -> list[Schema]:
         return eligible_schemas(schemas, self.config)
 
-    def _select_keyword(self, user_message: str, schemas: list[Schema]) -> SelectionResult:
+    def _rank(self, user_message: str, schemas: list[Schema]) -> _Ranking:
         eligible = self._eligible(schemas)
         schemas_by_name: dict[str, list[Schema]] = defaultdict(list)
         for schema in eligible:
@@ -108,14 +127,25 @@ class ToolSelector:
             score_details[doc.name] = parts
             scores[doc.name] = total
 
-        selected: list[Schema] = []
-        selected_names: set[str] = set()
+        always_selected: list[Schema] = []
         always_present: list[str] = []
         for name in _always_include_names(self.config.always_include):
-            if name in by_name and name not in selected_names:
-                selected.append(by_name[name])
-                selected_names.add(name)
+            if name in by_name and name not in always_present:
+                always_selected.append(by_name[name])
                 always_present.append(name)
+        ranked_names = [doc.name for doc in sorted(docs, key=lambda doc: (scores.get(doc.name, 0.0), doc.name), reverse=True)]
+        return _Ranking(eligible, by_name, ranked_names, scores, score_details, query_tokens, always_selected, always_present)
+
+    def _select_keyword(self, user_message: str, schemas: list[Schema], ranking: _Ranking | None = None) -> SelectionResult:
+        ranking = ranking or self._rank(user_message, schemas)
+        eligible = ranking.eligible
+        by_name = ranking.by_name
+        scores = ranking.scores
+        score_details = ranking.score_details
+        query_tokens = ranking.query_tokens
+        always_present = list(ranking.always_present)
+        selected = list(ranking.always_selected)
+        selected_names = set(always_present)
 
         if _is_low_information_query(query_tokens):
             return SelectionResult(
@@ -139,17 +169,16 @@ class ToolSelector:
             return SelectionResult(self.config.mode, selected, [], scores, len(schemas), always_present, reason="no_relevant_match", score_details=score_details, expanded_query_tokens=query_tokens)
 
         remaining_slots = self.config.top_k
-        ranked = sorted(docs, key=lambda doc: (scores.get(doc.name, 0.0), doc.name), reverse=True)
-        for doc in ranked:
+        for name in ranking.ranked_names:
             if remaining_slots <= 0:
                 break
-            if doc.name in selected_names:
+            if name in selected_names:
                 continue
-            score = scores.get(doc.name, 0.0)
+            score = scores.get(name, 0.0)
             if score < self.config.min_score:
                 continue
-            selected.append(by_name[doc.name])
-            selected_names.add(doc.name)
+            selected.append(by_name[name])
+            selected_names.add(name)
             remaining_slots -= 1
 
         if _needs_skill_companions(query_tokens, selected_names):
@@ -161,6 +190,71 @@ class ToolSelector:
         if not selected and eligible and self.config.top_k > 0:
             return SelectionResult(self.config.mode, selected, [], scores, len(schemas), always_present, reason="below_min_score", score_details=score_details, expanded_query_tokens=query_tokens)
         return SelectionResult(self.config.mode, selected, [tool_name(s) for s in selected], scores, len(schemas), always_present, score_details=score_details, expanded_query_tokens=query_tokens)
+
+    def _select_jev(self, user_message: str, schemas: list[Schema]) -> SelectionResult:
+        """Keyword shortlist re-ranked by Jev; any Jev failure keeps the keyword result.
+
+        Jev sees only the user's request, with candidates in a stable order, so
+        every model call in one turn's tool loop sends the same payload and hits
+        the cache. Tools already used in the turn stay selected directly.
+        """
+        keyword = self._select_keyword(user_message, schemas)
+        request_text, _, mention_text = user_message.partition(TOOL_MENTIONS_MARKER)
+        ranking = self._rank(request_text, schemas)
+        if keyword.reason == "low_information_query" or not ranking.query_tokens:
+            return replace(keyword, mode="jev")
+        jev_cfg = self.config.jev
+        always = set(ranking.always_present)
+        shortlist = [name for name in ranking.ranked_names if name not in always][: jev_cfg.shortlist]
+        candidates = sorted(shortlist)
+        try:
+            probabilities, metadata = score_tools(request_text, [ranking.by_name[name] for name in candidates], jev_cfg)
+        except JevUnavailable as exc:
+            LOG.info("tool-slimmer jev ranking unavailable (%s); using keyword selection", exc)
+            return replace(keyword, mode="jev", metadata={**keyword.metadata, "jev_fallback": str(exc)})
+
+        selected = list(ranking.always_selected)
+        selected_names = set(always)
+        mentioned = [name for name in dict.fromkeys(mention_text.split()) if name in ranking.by_name and name not in selected_names]
+        for name in mentioned:
+            selected.append(ranking.by_name[name])
+            selected_names.add(name)
+        if mentioned:
+            metadata["jev_kept_turn_tools"] = mentioned
+        passing = sorted(
+            (name for name in candidates if probabilities.get(name, 0.0) >= jev_cfg.threshold),
+            key=lambda name: (probabilities[name], ranking.scores.get(name, 0.0)),
+            reverse=True,
+        )
+        for name in [name for name in passing if name not in selected_names][: self.config.top_k]:
+            selected.append(ranking.by_name[name])
+            selected_names.add(name)
+        if _needs_skill_companions(ranking.query_tokens, selected_names):
+            for name in SKILL_COMPANION_TOOL_NAMES:
+                if name in ranking.by_name and name not in selected_names:
+                    selected.append(ranking.by_name[name])
+                    selected_names.add(name)
+        # Catalog order keeps the tool block byte-identical across the turn's tool
+        # loop, so provider and local prefix caches keep hitting.
+        catalog_order = {name: index for index, name in enumerate(ranking.by_name)}
+        selected = selected[: len(always)] + sorted(selected[len(always) :], key=lambda schema: catalog_order[tool_name(schema)])
+        score_details = {
+            name: {"jev": round(probabilities[name], 4), "keyword_total": ranking.scores.get(name, 0.0)}
+            for name in candidates
+            if name in probabilities
+        }
+        return SelectionResult(
+            "jev",
+            selected,
+            [tool_name(schema) for schema in selected],
+            {name: round(probability, 4) for name, probability in probabilities.items()},
+            len(schemas),
+            list(ranking.always_present),
+            reason=None if passing or mentioned else "jev_no_tool_above_threshold",
+            score_details=score_details,
+            expanded_query_tokens=ranking.query_tokens,
+            metadata=metadata,
+        )
 
     @staticmethod
     def _score_parts(query_tokens: list[str], alias_terms: set[str], doc: ToolDocument, *, hybrid: bool = False) -> dict[str, float]:

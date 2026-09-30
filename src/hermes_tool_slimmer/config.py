@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 
 
-VALID_MODES = {"eager", "keyword", "hybrid", "anthropic_tool_search", "two_pass"}
+VALID_MODES = {"eager", "keyword", "hybrid", "anthropic_tool_search", "two_pass", "jev"}
 _LIST_FIELDS = {
     "always_exclude",
     "always_include",
@@ -23,6 +23,7 @@ _BOOL_FIELDS = {"enabled", "include_mcp_tools", "include_native_tools", "log_dec
 _ANTHROPIC_LIST_FIELDS = {"never_defer"}
 _ANTHROPIC_BOOL_FIELDS = {"defer_mcp_tools", "defer_native_tools", "tool_search_supported"}
 _TWO_PASS_BOOL_FIELDS = {"cache_hydrated_tools", "fallback_to_keyword", "include_toolsets"}
+_NESTED_SECTIONS = ("anthropic", "two_pass", "jev")
 _PROFILE_ALIASES = {
     "chat": "cli",
     "console": "cli",
@@ -53,6 +54,20 @@ class TwoPassConfig:
 
 
 @dataclass
+class JevConfig:
+    """TypeSafe Jev re-ranking for ``mode: jev``. The API key is read from ``api_key_env``."""
+
+    model: str = "jev-latest"
+    api_key_env: str = "TYPESAFE_API_KEY"
+    base_url: str = "https://api.typesafe.ai"
+    timeout_seconds: float = 1.5
+    cooldown_seconds: float = 60.0
+    shortlist: int = 32
+    threshold: float = 0.5
+    max_description_chars: int = 300
+
+
+@dataclass
 class ToolSlimmerConfig:
     enabled: bool = True
     mode: str = "keyword"
@@ -73,6 +88,7 @@ class ToolSlimmerConfig:
     profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     anthropic: AnthropicConfig = field(default_factory=AnthropicConfig)
     two_pass: TwoPassConfig = field(default_factory=TwoPassConfig)
+    jev: JevConfig = field(default_factory=JevConfig)
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> "ToolSlimmerConfig":
@@ -82,10 +98,13 @@ class ToolSlimmerConfig:
         profiles_raw = raw.pop("profiles", {}) or {}
         anthropic_raw = raw.pop("anthropic", {}) or {}
         two_pass_raw = raw.pop("two_pass", {}) or {}
+        jev_raw = raw.pop("jev", {}) or {}
         if not isinstance(anthropic_raw, dict):
             anthropic_raw = {}
         if not isinstance(two_pass_raw, dict):
             two_pass_raw = {}
+        if not isinstance(jev_raw, dict):
+            jev_raw = {}
         raw = _normalize_mapping(raw, cls.__dataclass_fields__, _LIST_FIELDS, _BOOL_FIELDS)
         raw["profiles"] = _normalize_profiles(profiles_raw)
         anthropic_raw = _normalize_mapping(
@@ -101,9 +120,10 @@ class ToolSlimmerConfig:
             set(),
             _TWO_PASS_BOOL_FIELDS,
         )
-        cfg = cls(**{key: value for key, value in raw.items() if key in cls.__dataclass_fields__ and key != "anthropic"})
+        cfg = cls(**{key: value for key, value in raw.items() if key in cls.__dataclass_fields__ and key not in _NESTED_SECTIONS})
         cfg.anthropic = AnthropicConfig(**{key: value for key, value in anthropic_raw.items() if key in AnthropicConfig.__dataclass_fields__})
         cfg.two_pass = TwoPassConfig(**{key: value for key, value in two_pass_raw.items() if key in TwoPassConfig.__dataclass_fields__})
+        cfg.jev = JevConfig(**{key: value for key, value in jev_raw.items() if key in JevConfig.__dataclass_fields__})
         cfg.validate()
         return cfg
 
@@ -120,6 +140,7 @@ class ToolSlimmerConfig:
         raw = asdict(self)
         raw["anthropic"] = asdict(self.anthropic)
         raw["two_pass"] = asdict(self.two_pass)
+        raw["jev"] = asdict(self.jev)
         raw["profiles"] = self.profiles
         for overlay in overlays:
             _merge_profile_overlay(raw, overlay)
@@ -163,6 +184,21 @@ class ToolSlimmerConfig:
             raise ValueError("tool_slimmer.two_pass.hydrate_limit must be a finite integer")
         if self.two_pass.hydrate_limit < 1:
             raise ValueError("tool_slimmer.two_pass.hydrate_limit must be >= 1")
+        for name in ("model", "api_key_env", "base_url"):
+            if not isinstance(getattr(self.jev, name), str) or not getattr(self.jev, name).strip():
+                raise ValueError(f"tool_slimmer.jev.{name} must be a non-empty string")
+        if not self.jev.base_url.startswith("https://"):
+            raise ValueError("tool_slimmer.jev.base_url must use https")
+        for name in ("timeout_seconds", "cooldown_seconds", "threshold"):
+            value = getattr(self.jev, name)
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"tool_slimmer.jev.{name} must be a finite number >= 0")
+        if self.jev.threshold > 1:
+            raise ValueError("tool_slimmer.jev.threshold must be <= 1")
+        for name in ("shortlist", "max_description_chars"):
+            value = getattr(self.jev, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"tool_slimmer.jev.{name} must be an integer >= 1")
 
 
 def _normalize_string_list(value: Any, field_name: str) -> list[str]:
@@ -210,6 +246,9 @@ def _normalize_profiles(value: Any) -> dict[str, dict[str, Any]]:
                 _ANTHROPIC_BOOL_FIELDS,
                 allow_none_booleans=True,
             )
+        jev_raw = profile.pop("jev", None)
+        if isinstance(jev_raw, dict):
+            normalized["jev"] = _normalize_mapping(jev_raw, JevConfig.__dataclass_fields__, set(), set())
         two_pass_raw = profile.pop("two_pass", None)
         if isinstance(two_pass_raw, dict):
             normalized["two_pass"] = _normalize_mapping(
@@ -236,11 +275,11 @@ def _merge_profile_overlay(raw: dict[str, Any], overlay: dict[str, Any]) -> None
             if not isinstance(anthropic, dict):
                 anthropic = {}
             raw["anthropic"] = {**anthropic, **value}
-        elif key == "two_pass" and isinstance(value, dict):
-            two_pass = raw.get("two_pass")
-            if not isinstance(two_pass, dict):
-                two_pass = {}
-            raw["two_pass"] = {**two_pass, **value}
+        elif key in {"two_pass", "jev"} and isinstance(value, dict):
+            section = raw.get(key)
+            if not isinstance(section, dict):
+                section = {}
+            raw[key] = {**section, **value}
         elif key == "aliases" and isinstance(value, dict):
             aliases = raw.get("aliases")
             if not isinstance(aliases, dict):
