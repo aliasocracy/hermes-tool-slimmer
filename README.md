@@ -14,7 +14,7 @@ A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that trims
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Hermes](https://img.shields.io/badge/Hermes-plugin%20%2B%20dashboard-111827)
 
-[Quick start](#-quick-start) · [How it works](#-how-it-works) · [Modes](#-modes) · [Configure](#%EF%B8%8F-configure) · [Commands](#-commands) · [Docs](#-docs)
+[Quick start](#-quick-start) · [How it works](#-how-it-works) · [Modes](#%EF%B8%8F-modes) · [Configure](#%EF%B8%8F-configure) · [Commands](#-commands) · [Docs](#-docs)
 
 </div>
 
