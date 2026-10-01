@@ -22,11 +22,13 @@ A [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin that trims
 
 Every model call in Hermes carries the full JSON schema of every enabled tool. With dozens of native and MCP tools, that is often 15–20k tokens per request, resent on every step of every turn. Tool Slimmer ranks the tools against what you actually asked and sends only your always-on tools plus the best matches.
 
-| Average tool tokens per request<br><sub>40 prompts, real 38-tool Hermes install</sub> | |
+| Setup | Tool tokens per request |
 |---|---:|
 | No slimming | ~15.1k |
 | `keyword` mode (default, fully local) | **~7.9k** &nbsp;(−48%) |
 | `jev` mode (experimental) | **~4.3k** &nbsp;(−71%) |
+
+<sub>Averages over 40 prompts on a real 38-tool Hermes install.</sub>
 
 ## ✨ Highlights
 
@@ -148,11 +150,11 @@ Only one surface is ever registered, so a request is never slimmed twice. `herme
 ## 🔍 How it works
 
 ```mermaid
-flowchart LR
-    A["Hermes builds a<br/>model request<br/>(every tool)"] --> B{"Tool Slimmer"}
-    B -- "rank tools<br/>for this turn" --> C["always_include<br/>+ best matches<br/>+ full-tools fallback"]
-    C --> D["Slim request<br/>to the model"]
-    B -. "any error" .-> E["Original request,<br/>unchanged"]
+flowchart TD
+    A["Hermes builds a model request with every tool"] --> B{"Tool Slimmer"}
+    B -- "rank tools for this turn" --> C["always_include + best matches + full-tools fallback"]
+    B -. "any error" .-> E["Original request, unchanged"]
+    C --> D["Slim request to the model"]
 ```
 
 1. **Filter.** Disabled tools and toolsets, `always_exclude`, and the MCP/native include switches are applied first.
