@@ -10,6 +10,8 @@ provides_hooks:
   - pre_llm_call
 optional_hooks:
   - select_tool_schemas
+provides_middleware:
+  - llm_request
 provides_commands:
   - tool-slimmer
 provides_cli:
