@@ -1,12 +1,23 @@
 # Changelog
 
-## 0.8.0 - Unreleased
+## 0.8.0 - 2026-09-30
+
+Experimental Jev ranking mode and Hermes plugin catalog readiness release.
 
 ### Added
 
 - Experimental `mode: jev`: the keyword shortlist is re-ranked by TypeSafe's Jev decision model with one yes/no probability per candidate tool, answered in a single request. Tools at or above `jev.threshold` are kept, results are cached for the rest of the turn, and any Jev failure falls back to keyword selection with a cooldown. The API key is read from `TYPESAFE_API_KEY`.
 - `doctor` reports whether the Jev API key is available, and `privacy` lists what `jev` mode sends to TypeSafe.
 - The model-callable `tool_slimmer_select` tool cannot switch to `jev` unless it is already the configured mode, so the agent cannot start external calls on its own.
+
+### Fixed
+
+- `plugin.yaml` now declares the `llm_request` middleware that v0.7.0 registers on Hermes v0.19+, so `hermes plugins validate` (the Hermes plugin catalog admission check) passes. A test now compares what `register()` records against the manifest.
+
+### Changed
+
+- README reorganized around a quick start, how it works, modes, config, dashboard, and a docs index, with a Hermes compatibility table for the v0.19+ middleware path.
+- Repository links in the README, docs, `pyproject.toml`, and the self-heal unit point at `aliasocracy/hermes-tool-slimmer`.
 
 ## 0.7.0 - 2026-09-30
 

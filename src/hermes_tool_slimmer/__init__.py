@@ -5,7 +5,7 @@ from .schemas import HYDRATE_TOOLS_SCHEMA, REQUEST_FULL_TOOLS_SCHEMA, SELECT_SCH
 from .tools import tool_slimmer_hydrate_tools, tool_slimmer_request_full_tools, tool_slimmer_select, tool_slimmer_status
 
 __all__ = ["register"]
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 
 def register(ctx):
