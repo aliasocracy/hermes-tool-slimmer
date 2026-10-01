@@ -27,7 +27,7 @@ if [ -d "$HOME/hermes-tool-slimmer/.git" ]; then
   cd "$HOME/hermes-tool-slimmer"
   git pull --ff-only
 else
-  git clone https://github.com/alias8818/hermes-tool-slimmer.git "$HOME/hermes-tool-slimmer"
+  git clone https://github.com/aliasocracy/hermes-tool-slimmer.git "$HOME/hermes-tool-slimmer"
   cd "$HOME/hermes-tool-slimmer"
 fi
 

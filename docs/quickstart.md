@@ -9,7 +9,7 @@ Use Tool Slimmer v0.4.0+ with Hermes Agent v0.14.0. Older Tool Slimmer releases 
 On Hermes builds with dashboard plugin repair support, open the dashboard **Plugins** page, paste this into the install field, and keep **Enable after install** on:
 
 ```text
-alias8818/hermes-tool-slimmer
+aliasocracy/hermes-tool-slimmer
 ```
 
 The dashboard installer clones the repo to `~/.hermes/plugins/tool-slimmer`, runs the Tool Slimmer repair installer with `--no-restart`, and preserves the git checkout so the dashboard **Update** button can use `git pull` later. Restart the gateway after install or update so active schema slimming uses the patched selector hook.
@@ -20,7 +20,7 @@ Open a terminal on the machine where Hermes is installed:
 
 ```bash
 cd "$HOME"
-git clone https://github.com/alias8818/hermes-tool-slimmer.git
+git clone https://github.com/aliasocracy/hermes-tool-slimmer.git
 cd hermes-tool-slimmer
 ```
 
@@ -52,7 +52,7 @@ if [ -d "$HOME/hermes-tool-slimmer/.git" ]; then
   cd "$HOME/hermes-tool-slimmer"
   git pull --ff-only
 else
-  git clone https://github.com/alias8818/hermes-tool-slimmer.git "$HOME/hermes-tool-slimmer"
+  git clone https://github.com/aliasocracy/hermes-tool-slimmer.git "$HOME/hermes-tool-slimmer"
   cd "$HOME/hermes-tool-slimmer"
 fi
 
@@ -105,10 +105,10 @@ If the approval layer asks what this command does, the answer is: installs the P
 Give Hermes Agent this prompt:
 
 ```text
-Install Hermes Tool Slimmer from https://github.com/alias8818/hermes-tool-slimmer.
+Install Hermes Tool Slimmer from https://github.com/aliasocracy/hermes-tool-slimmer.
 Use $HOME/hermes-tool-slimmer as the checkout path.
 If $HOME/hermes-tool-slimmer already exists and is a git checkout, run git pull --ff-only there first.
-If it does not exist, clone https://github.com/alias8818/hermes-tool-slimmer.git there.
+If it does not exist, clone https://github.com/aliasocracy/hermes-tool-slimmer.git there.
 Do not use an old /tmp/hermes-tool-slimmer checkout.
 Then run:
 HERMES_BIN="$HOME/.hermes/hermes-agent/venv/bin/hermes" bash "$HOME/hermes-tool-slimmer/scripts/install-hermes-tool-slimmer.sh"
