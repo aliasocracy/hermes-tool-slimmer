@@ -77,6 +77,21 @@ def test_issue_5_unpatched_core_uses_llm_request_middleware():
     assert ctx.calls == [("hook", "pre_llm_call"), ("middleware", "llm_request")]
 
 
+def test_manifest_declares_registered_hooks_and_middleware():
+    # Hermes' catalog admission (`hermes plugins validate`) fails a plugin that
+    # registers hooks or middleware its plugin.yaml does not declare.
+    from pathlib import Path
+
+    import yaml
+
+    manifest = yaml.safe_load((Path(__file__).resolve().parents[1] / "plugin.yaml").read_text(encoding="utf-8"))
+    ctx = MiddlewareCtx(valid_hooks={"pre_llm_call"}, valid_middleware={"llm_request"})
+    maybe_register_selector_hook(ctx)
+
+    assert {name for kind, name in ctx.calls if kind == "hook"} <= set(manifest["provides_hooks"])
+    assert {name for kind, name in ctx.calls if kind == "middleware"} <= set(manifest["provides_middleware"])
+
+
 def test_patched_core_prefers_hook_over_middleware(monkeypatch):
     monkeypatch.setattr(integration, "_core_invokes_selector_hook", lambda: True)
     ctx = MiddlewareCtx(valid_hooks={"pre_llm_call", "select_tool_schemas"}, valid_middleware={"llm_request"})
