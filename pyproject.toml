@@ -64,9 +64,9 @@ semantic = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/alias8818/hermes-tool-slimmer"
-Repository = "https://github.com/alias8818/hermes-tool-slimmer"
-Issues = "https://github.com/alias8818/hermes-tool-slimmer/issues"
+Homepage = "https://github.com/aliasocracy/hermes-tool-slimmer"
+Repository = "https://github.com/aliasocracy/hermes-tool-slimmer"
+Issues = "https://github.com/aliasocracy/hermes-tool-slimmer/issues"
 
 [project.entry-points."hermes_agent.plugins"]
 tool-slimmer = "hermes_tool_slimmer"

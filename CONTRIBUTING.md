@@ -5,7 +5,7 @@ Thanks for helping improve Hermes Tool Slimmer. This project is intentionally sm
 ## Development setup
 
 ```bash
-git clone https://github.com/alias8818/hermes-tool-slimmer.git
+git clone https://github.com/aliasocracy/hermes-tool-slimmer.git
 cd hermes-tool-slimmer
 python -m venv .venv
 . .venv/bin/activate

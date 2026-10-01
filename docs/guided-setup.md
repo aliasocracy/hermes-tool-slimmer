@@ -9,7 +9,7 @@ This page is for people who want Tool Slimmer installed and tuned with the fewes
 3. Install from this repo:
 
    ```text
-   alias8818/hermes-tool-slimmer
+   aliasocracy/hermes-tool-slimmer
    ```
 
 4. Restart Hermes when the dashboard asks.
@@ -25,7 +25,7 @@ The dashboard makes a backup before writing config. The backup path is shown aft
 Paste this prompt into Hermes Agent:
 
 ```text
-Install Hermes Tool Slimmer from https://github.com/alias8818/hermes-tool-slimmer.
+Install Hermes Tool Slimmer from https://github.com/aliasocracy/hermes-tool-slimmer.
 
 Use the Hermes virtualenv launcher, not a system Python launcher:
 HERMES_BIN="$HOME/.hermes/hermes-agent/venv/bin/hermes" bash "$HOME/hermes-tool-slimmer/scripts/install-hermes-tool-slimmer.sh"

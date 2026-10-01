@@ -127,7 +127,7 @@ install_systemd_unit() {
   cat >"$(unit_path)" <<EOF
 [Unit]
 Description=Hermes Tool Slimmer self-heal
-Documentation=https://github.com/alias8818/hermes-tool-slimmer
+Documentation=https://github.com/aliasocracy/hermes-tool-slimmer
 After=default.target
 Before=hermes-gateway.service hermes-dashboard.service
 
